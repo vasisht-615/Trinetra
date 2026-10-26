@@ -1,0 +1,236 @@
+//@version=6
+// Desk All-in-One for the crypto-futures-desk skill. Original code, free to use.
+// One indicator slot: EMAs, session VWAP + bands, previous-day / week levels,
+// market structure (swings, BOS / CHoCH, dealing range with the mid-range
+// no-trade band), killzones, squeeze, and a data table that prints exact values
+// so Claude can read a screenshot without guessing numbers off the chart.
+// Best on BINANCE:<COIN>USDT.P charts (the .P perpetual adds open interest).
+indicator("Desk All-in-One", shorttitle = "DESK", overlay = true, max_lines_count = 100, max_labels_count = 100, max_boxes_count = 10, max_bars_back = 500)
+max_bars_back(time, 500)
+
+// ---------------------------------------------------------------- inputs
+grpL = "Layers"
+showEma    = input.bool(true, "EMA 21 / 50 / 200", group = grpL)
+showVwap   = input.bool(true, "Session VWAP + 1 and 2 sd bands", group = grpL)
+showLevels = input.bool(true, "Previous day high / low, week open", group = grpL)
+showStruct = input.bool(true, "Market structure (swings, BOS / CHoCH, dealing range)", group = grpL)
+showKZ     = input.bool(true, "Killzones (London 07-10, New York 13-16 UTC)", group = grpL)
+showSqz    = input.bool(true, "Squeeze release markers", group = grpL)
+
+grpT = "Data table"
+showTable = input.bool(true, "Show data table", group = grpT)
+tablePos  = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = grpT)
+tableSize = input.string("Normal", "Text size", options = ["Small", "Normal", "Large"], group = grpT)
+useClosed = input.bool(true, "Table shows the last CLOSED bar (matches the engine)", group = grpT)
+
+grpP = "Parameters"
+pivLen = input.int(3, "Swing pivot length (bars each side)", minval = 2, maxval = 10, group = grpP)
+midLo  = input.float(0.40, "Mid-range band from", minval = 0.0, maxval = 1.0, step = 0.05, group = grpP)
+midHi  = input.float(0.60, "Mid-range band to", minval = 0.0, maxval = 1.0, step = 0.05, group = grpP)
+oiLen  = input.int(16, "Open interest change lookback (bars)", minval = 1, maxval = 500, group = grpP)
+tfA    = input.timeframe("240", "Higher timeframe A (desk primary: 4h)", group = grpP)
+tfB    = input.timeframe("1D", "Higher timeframe B (desk higher: 1D)", group = grpP)
+
+// ---------------------------------------------------------------- core calculations
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+rsi14 = ta.rsi(close, 14)
+atr14 = ta.atr(14)
+atrPct = atr14 / close * 100.0
+atrRank = ta.percentrank(atrPct, 200) / 100.0
+[diPlus, diMinus, adx14] = ta.dmi(14, 14)
+
+trendNow = ema21 > ema50 and close > ema50 and ema50 > ema50[5] ? 1 : ema21 < ema50 and close < ema50 and ema50 < ema50[5] ? -1 : 0
+
+// squeeze: Bollinger (20, 2) inside Keltner (20, 1.5 x average true range)
+basis = ta.sma(close, 20)
+bbDev = 2.0 * ta.stdev(close, 20)
+kcRange = 1.5 * ta.sma(ta.tr(true), 20)
+sqzOn = (basis - bbDev > basis - kcRange) and (basis + bbDev < basis + kcRange)
+var int sqzBars = 0
+sqzBars := sqzOn ? sqzBars + 1 : 0
+mom = ta.linreg(close - math.avg(math.avg(ta.highest(high, 20), ta.lowest(low, 20)), basis), 20, 0)
+sqzFiredUp = barstate.isconfirmed and sqzOn[1] and not sqzOn and mom > 0
+sqzFiredDn = barstate.isconfirmed and sqzOn[1] and not sqzOn and mom < 0
+
+regime = atrRank > 0.95 ? "HIGH VOL" : sqzOn ? "SQUEEZE" : adx14 >= 25 and trendNow == 1 ? "TREND UP" : adx14 >= 25 and trendNow == -1 ? "TREND DOWN" : adx14 < 20 ? "RANGE" : "TRANSITION"
+
+// 48-bar range position
+hh48 = ta.highest(high, 48)
+ll48 = ta.lowest(low, 48)
+pos48 = hh48 > ll48 ? (close - ll48) / (hh48 - ll48) : na
+
+// volume z-score against the previous 50 bars
+volMean = ta.sma(volume, 50)
+volSd = ta.stdev(volume, 50)
+volZ = volSd[1] > 0 ? (volume - volMean[1]) / volSd[1] : na
+
+// session VWAP (resets 00:00 UTC on crypto) with 1 and 2 standard deviation bands
+dayStart = timeframe.change("1D")
+[vwap1, vwU1, vwL1] = ta.vwap(hlc3, dayStart, 1.0)
+[vwap2, vwU2, vwL2] = ta.vwap(hlc3, dayStart, 2.0)
+vwapSd = vwU1 - vwap1
+vwapZ = vwapSd > 0 ? (close - vwap1) / vwapSd : na
+
+// previous day and week levels, no repainting
+pdh = request.security(syminfo.tickerid, "1D", high[1], lookahead = barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "1D", low[1], lookahead = barmerge.lookahead_on)
+wOpen = request.security(syminfo.tickerid, "1W", open, lookahead = barmerge.lookahead_on)
+
+// higher timeframes: last CLOSED bar values, no repainting
+trendA = request.security(syminfo.tickerid, tfA, trendNow[1], lookahead = barmerge.lookahead_on)
+trendB = request.security(syminfo.tickerid, tfB, trendNow[1], lookahead = barmerge.lookahead_on)
+rsiA = request.security(syminfo.tickerid, tfA, rsi14[1], lookahead = barmerge.lookahead_on)
+rsiB = request.security(syminfo.tickerid, tfB, rsi14[1], lookahead = barmerge.lookahead_on)
+
+// open interest from the perpetual's _OI series (na on symbols without it)
+oiSym = syminfo.prefix + ":" + syminfo.ticker + "_OI"
+oi = request.security(oiSym, timeframe.period, close, ignore_invalid_symbol = true)
+oiChg = not na(oi) and not na(oi[oiLen]) and oi[oiLen] != 0 ? (oi / oi[oiLen] - 1.0) * 100.0 : na
+
+// ---------------------------------------------------------------- market structure
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+var float lastSH = na
+var float prevSH = na
+var int lastSHbar = na
+var float lastSL = na
+var float prevSL = na
+var int lastSLbar = na
+var bool shBroken = false
+var bool slBroken = false
+var int structTrend = 0
+var string lastEvent = "none yet"
+var float lastEventLvl = na
+
+if not na(ph)
+    prevSH := lastSH
+    lastSH := ph
+    lastSHbar := bar_index - pivLen
+    shBroken := false
+if not na(pl)
+    prevSL := lastSL
+    lastSL := pl
+    lastSLbar := bar_index - pivLen
+    slBroken := false
+
+bullBreak = barstate.isconfirmed and not na(lastSH) and not shBroken and close > lastSH
+bearBreak = barstate.isconfirmed and not na(lastSL) and not slBroken and close < lastSL
+
+if bullBreak
+    lastEvent := structTrend == 1 ? "BOS UP" : "CHoCH UP"
+    lastEventLvl := lastSH
+    structTrend := 1
+    shBroken := true
+    if showStruct
+        line.new(math.max(lastSHbar, bar_index - 490), lastSH, bar_index, lastSH, color = color.new(color.teal, 30), style = line.style_dotted)
+        label.new(bar_index, lastSH, lastEvent, style = label.style_label_down, color = color.new(color.teal, 25), textcolor = color.white, size = size.tiny)
+if bearBreak
+    lastEvent := structTrend == -1 ? "BOS DOWN" : "CHoCH DOWN"
+    lastEventLvl := lastSL
+    structTrend := -1
+    slBroken := true
+    if showStruct
+        line.new(math.max(lastSLbar, bar_index - 490), lastSL, bar_index, lastSL, color = color.new(color.maroon, 30), style = line.style_dotted)
+        label.new(bar_index, lastSL, lastEvent, style = label.style_label_up, color = color.new(color.maroon, 25), textcolor = color.white, size = size.tiny)
+
+swingTrend = not na(prevSH) and not na(prevSL) ? (lastSH > prevSH and lastSL > prevSL ? 1 : lastSH < prevSH and lastSL < prevSL ? -1 : 0) : 0
+drHi = lastSH
+drLo = lastSL
+drPos = not na(drHi) and not na(drLo) and drHi > drLo ? (close - drLo) / (drHi - drLo) : na
+
+// ---------------------------------------------------------------- drawing
+plot(showEma ? ema21 : na, "EMA 21", color = color.new(color.yellow, 10), linewidth = 1)
+plot(showEma ? ema50 : na, "EMA 50", color = color.new(color.orange, 10), linewidth = 1)
+plot(showEma ? ema200 : na, "EMA 200", color = color.new(color.purple, 0), linewidth = 2)
+
+pV = plot(showVwap ? vwap1 : na, "VWAP", color = color.new(color.aqua, 0), linewidth = 2, style = plot.style_linebr)
+pU1 = plot(showVwap ? vwU1 : na, "VWAP +1 sd", color = color.new(color.aqua, 60), style = plot.style_linebr)
+pL1 = plot(showVwap ? vwL1 : na, "VWAP -1 sd", color = color.new(color.aqua, 60), style = plot.style_linebr)
+pU2 = plot(showVwap ? vwU2 : na, "VWAP +2 sd", color = color.new(color.aqua, 80), style = plot.style_linebr)
+pL2 = plot(showVwap ? vwL2 : na, "VWAP -2 sd", color = color.new(color.aqua, 80), style = plot.style_linebr)
+fill(pU1, pL1, color = color.new(color.aqua, 94), title = "VWAP 1 sd zone")
+
+plot(showLevels ? pdh : na, "Previous day high", color = color.new(color.green, 20), style = plot.style_stepline)
+plot(showLevels ? pdl : na, "Previous day low", color = color.new(color.red, 20), style = plot.style_stepline)
+plot(showLevels ? wOpen : na, "Week open", color = color.new(color.gray, 20), style = plot.style_stepline)
+
+plotshape(showStruct and not na(ph), "Swing high", shape.triangledown, location.abovebar, color.new(color.red, 30), offset = -pivLen, size = size.tiny)
+plotshape(showStruct and not na(pl), "Swing low", shape.triangleup, location.belowbar, color.new(color.green, 30), offset = -pivLen, size = size.tiny)
+plotshape(showSqz and sqzFiredUp, "Squeeze released up", shape.circle, location.belowbar, color.new(color.teal, 0), size = size.tiny)
+plotshape(showSqz and sqzFiredDn, "Squeeze released down", shape.circle, location.abovebar, color.new(color.maroon, 0), size = size.tiny)
+
+inLondonKZ = not na(time(timeframe.period, "0700-1000:1234567", "UTC"))
+inNyKZ = not na(time(timeframe.period, "1300-1600:1234567", "UTC"))
+inAsia = not na(time(timeframe.period, "0000-0800:1234567", "UTC"))
+bgcolor(showKZ and inLondonKZ ? color.new(color.blue, 92) : na, title = "London open killzone")
+bgcolor(showKZ and inNyKZ ? color.new(color.orange, 92) : na, title = "New York open killzone")
+
+var line lnHi = na
+var line lnLo = na
+var box bxMid = na
+if barstate.islast and showStruct and not na(drHi) and not na(drLo) and drHi > drLo
+    line.delete(lnHi)
+    line.delete(lnLo)
+    box.delete(bxMid)
+    leftBar = math.max(math.min(lastSHbar, lastSLbar), bar_index - 490)
+    lnHi := line.new(math.max(lastSHbar, bar_index - 490), drHi, bar_index + 5, drHi, color = color.new(color.red, 30), style = line.style_dashed, extend = extend.right)
+    lnLo := line.new(math.max(lastSLbar, bar_index - 490), drLo, bar_index + 5, drLo, color = color.new(color.green, 30), style = line.style_dashed, extend = extend.right)
+    bxMid := box.new(leftBar, drLo + midHi * (drHi - drLo), bar_index + 15, drLo + midLo * (drHi - drLo), border_color = color.new(color.orange, 50), bgcolor = color.new(color.orange, 88), text = "MID-RANGE: NO TRADE", text_color = color.new(color.orange, 20), text_size = size.small)
+
+alertcondition(sqzFiredUp or sqzFiredDn, "DESK squeeze released", "DESK: squeeze released on {{ticker}} {{interval}}")
+alertcondition(bullBreak or bearBreak, "DESK structure break", "DESK: BOS / CHoCH on {{ticker}} {{interval}}")
+
+// ---------------------------------------------------------------- data table
+f_num(x, fmt) =>
+    na(x) ? "n/a" : str.tostring(x, fmt)
+
+f_sgn(x, fmt) =>
+    na(x) ? "n/a" : (x >= 0 ? "+" : "") + str.tostring(x, fmt)
+
+f_trendTxt(t) =>
+    na(t) ? "n/a" : t == 1 ? "UP" : t == -1 ? "DOWN" : "FLAT"
+
+f_size(s) =>
+    s == "Small" ? size.small : s == "Large" ? size.large : size.normal
+
+f_pos(p) =>
+    p == "Top left" ? position.top_left : p == "Bottom right" ? position.bottom_right : p == "Bottom left" ? position.bottom_left : position.top_right
+
+var table tbl = table.new(f_pos(tablePos), 2, 22, bgcolor = color.new(color.black, 10), border_color = color.new(color.gray, 70), border_width = 1, frame_color = color.new(color.gray, 40), frame_width = 1)
+
+f_row(r, k, v, col) =>
+    table.cell(tbl, 0, r, k, text_color = color.silver, text_size = f_size(tableSize), text_halign = text.align_left)
+    table.cell(tbl, 1, r, v, text_color = col, text_size = f_size(tableSize), text_halign = text.align_right)
+
+if showTable and barstate.islast
+    o = useClosed and not barstate.isconfirmed ? 1 : 0
+    zoneTxt = na(drPos[o]) ? "n/a" : drPos[o] < 0 ? "BELOW RANGE" : drPos[o] > 1 ? "ABOVE RANGE" : drPos[o] < midLo ? "DISCOUNT" : drPos[o] > midHi ? "PREMIUM" : "MID - NO TRADE"
+    zoneCol = zoneTxt == "MID - NO TRADE" ? color.orange : zoneTxt == "DISCOUNT" ? color.lime : zoneTxt == "PREMIUM" ? color.red : color.white
+    regCol = regime[o] == "TREND UP" ? color.lime : regime[o] == "TREND DOWN" ? color.red : regime[o] == "HIGH VOL" ? color.fuchsia : regime[o] == "SQUEEZE" ? color.yellow : color.white
+    sessTxt = inLondonKZ[o] ? "London killzone" : inNyKZ[o] ? "New York killzone" : inAsia[o] ? "Asia" : "-"
+    sqzTxt = sqzOn[o] ? "ON " + str.tostring(sqzBars[o]) + " bars" : sqzFiredUp[o] ? "RELEASED UP" : sqzFiredDn[o] ? "RELEASED DOWN" : "off"
+    momTxt = na(mom[o]) ? "n/a" : (mom[o] > 0 ? "+" : "-") + (mom[o] > mom[o + 1] ? " rising" : " falling")
+    f_row(0, "DESK " + syminfo.ticker + " " + timeframe.period, (o == 1 ? "closed bar opened " : "bar opened ") + str.format_time(time[o], "yyyy-MM-dd HH:mm", "UTC") + " UTC", color.white)
+    f_row(1, "Price (close)", f_num(close[o], format.mintick), color.white)
+    f_row(2, "Regime", regime[o], regCol)
+    f_row(3, "Trend this / A / B", f_trendTxt(trendNow[o]) + " / " + f_trendTxt(trendA) + " / " + f_trendTxt(trendB), color.white)
+    f_row(4, "RSI this / A / B", f_num(rsi14[o], "0.0") + " / " + f_num(rsiA, "0.0") + " / " + f_num(rsiB, "0.0"), color.white)
+    f_row(5, "ADX (+DI / -DI)", f_num(adx14[o], "0.0") + " (" + f_num(diPlus[o], "0") + " / " + f_num(diMinus[o], "0") + ")", color.white)
+    f_row(6, "ATR (% of price, rank)", f_num(atr14[o], format.mintick) + " (" + f_num(atrPct[o], "0.000") + "%, " + f_num(atrRank[o], "0.00") + ")", color.white)
+    f_row(7, "EMA 21 / 50 / 200", f_num(ema21[o], format.mintick) + " / " + f_num(ema50[o], format.mintick) + " / " + f_num(ema200[o], format.mintick), color.white)
+    f_row(8, "VWAP (z)", f_num(vwap1[o], format.mintick) + " (" + f_sgn(vwapZ[o], "0.00") + ")", color.aqua)
+    f_row(9, "VWAP +1 / -1 sd", f_num(vwU1[o], format.mintick) + " / " + f_num(vwL1[o], format.mintick), color.aqua)
+    f_row(10, "Dealing range low / high", f_num(drLo[o], format.mintick) + " / " + f_num(drHi[o], format.mintick), color.white)
+    f_row(11, "Range position", f_num(drPos[o] * 100, "0") + "% " + zoneTxt, zoneCol)
+    f_row(12, "48-bar range position", f_num(pos48[o] * 100, "0") + "%", color.white)
+    f_row(13, "Structure (swings)", f_trendTxt(swingTrend[o]) + ", last " + lastEvent[o] + " @ " + f_num(lastEventLvl[o], format.mintick), color.white)
+    f_row(14, "Squeeze / momentum", sqzTxt + " / " + momTxt, sqzOn[o] ? color.yellow : color.white)
+    f_row(15, "Volume z", f_sgn(volZ[o], "0.00"), color.white)
+    f_row(16, "Prev day high / low", f_num(pdh, format.mintick) + " / " + f_num(pdl, format.mintick), color.white)
+    f_row(17, "Week open", f_num(wOpen, format.mintick), color.white)
+    f_row(18, "Open interest chg " + str.tostring(oiLen) + " bars", na(oiChg[o]) ? "n/a (use a .P chart)" : f_sgn(oiChg[o], "0.00") + "%", color.white)
+    f_row(19, "Session (UTC)", sessTxt, color.white)
+    f_row(20, "Higher TF A / B", tfA + " / " + tfB, color.gray)
+    f_row(21, "crypto-futures-desk", "values are data, not advice", color.gray)

@@ -1,0 +1,711 @@
+{
+ "about": "What can happen on a trade of a tested rule, from its own history (minute by minute, the plan exactly as traded). Built 2026-10-26 by scenario_study.py and gates_on_fed.py.",
+ "rules": {
+  "SOL|FOMC|momentum_after_60m": {
+   "title": "SOL after Fed decisions: follow the first hour",
+   "source": "Binance SOL/USDT spot 1-minute bars, 41 scheduled Fed decisions 2021-2026; CoinSwitch-like costs",
+   "n": 41,
+   "avg_R": 0.636,
+   "ci90": [
+    0.343,
+    0.917
+   ],
+   "outcomes": {
+    "target": 25,
+    "stop": 11,
+    "time": 5
+   },
+   "went_against_first": {
+    "winners": 28,
+    "winners_that_first_dipped_0.5R_or_more": 8,
+    "winners_that_first_dipped_0.8R_or_more": 4,
+    "median_winner_dip_R": -0.32
+   },
+   "reversals": {
+    "stopped": 11,
+    "stopped_within_2h": 5,
+    "worst_R": -1.077,
+    "losses_worse_than_minus_1.1R": 0,
+    "median_minutes_to_stop": 126
+   },
+   "management_variants": {
+    "breakeven_after_1R": {
+     "avg_R": 0.486,
+     "ci90": [
+      0.216,
+      0.751
+     ],
+     "diff_vs_tested": -0.15,
+     "diff_ci_97.5_bonferroni4": [
+      -0.358,
+      0.032
+     ]
+    },
+    "exit_if_back_through_release": {
+     "avg_R": 0.457,
+     "ci90": [
+      0.202,
+      0.711
+     ],
+     "diff_vs_tested": -0.179,
+     "diff_ci_97.5_bonferroni4": [
+      -0.452,
+      0.058
+     ]
+    },
+    "exit_if_back_through_entry_after_2h": {
+     "avg_R": 0.297,
+     "ci90": [
+      0.052,
+      0.549
+     ],
+     "diff_vs_tested": -0.339,
+     "diff_ci_97.5_bonferroni4": [
+      -0.638,
+      -0.064
+     ]
+    },
+    "scale_out": {
+     "avg_R": 0.593,
+     "ci90": [
+      0.29,
+      0.894
+     ],
+     "diff_vs_tested": -0.043,
+     "diff_ci_97.5_bonferroni4": [
+      -0.2,
+      0.108
+     ]
+    }
+   },
+   "splits": {
+    "press_conference_flip": {
+     "flip": {
+      "n": 8,
+      "avg_R": 0.818,
+      "ci90": [
+       0.189,
+       1.444
+      ]
+     },
+     "no_flip": {
+      "n": 33,
+      "avg_R": 0.592,
+      "ci90": [
+       0.271,
+       0.902
+      ]
+     }
+    },
+    "btc": {
+     "agrees": {
+      "n": 30,
+      "avg_R": 0.596,
+      "ci90": [
+       0.255,
+       0.923
+      ]
+     },
+     "disagrees": {
+      "n": 11,
+      "avg_R": 0.748,
+      "ci90": [
+       0.288,
+       1.205
+      ]
+     }
+    },
+    "decision": {
+     "hold": {
+      "n": 24,
+      "avg_R": 0.584,
+      "ci90": [
+       0.192,
+       0.965
+      ]
+     },
+     "hike": {
+      "n": 12,
+      "avg_R": 0.62,
+      "ci90": [
+       0.084,
+       1.106
+      ]
+     },
+     "cut": {
+      "n": 5,
+      "avg_R": 0.925,
+      "ci90": [
+       -0.075,
+       1.425
+      ]
+     }
+    },
+    "by_year": {
+     "2021": {
+      "n": 8,
+      "avg_R": 0.802,
+      "ci90": [
+       0.175,
+       1.428
+      ]
+     },
+     "2022": {
+      "n": 7,
+      "avg_R": 0.249,
+      "ci90": [
+       -0.469,
+       0.967
+      ]
+     },
+     "2023": {
+      "n": 7,
+      "avg_R": 1.226,
+      "ci90": [
+       0.81,
+       1.44
+      ]
+     },
+     "2024": {
+      "n": 6,
+      "avg_R": 1.015,
+      "ci90": [
+       0.19,
+       1.432
+      ]
+     },
+     "2025": {
+      "n": 8,
+      "avg_R": 0.175,
+      "ci90": [
+       -0.451,
+       0.802
+      ]
+     },
+     "2026": {
+      "n": 5,
+      "avg_R": 0.372,
+      "ci90": [
+       -0.395,
+       1.087
+      ]
+     }
+    },
+    "side": {
+     "long": {
+      "n": 26,
+      "avg_R": 0.606,
+      "ci90": [
+       0.223,
+       0.953
+      ]
+     },
+     "short": {
+      "n": 15,
+      "avg_R": 0.689,
+      "ci90": [
+       0.227,
+       1.099
+      ]
+     }
+    },
+    "move_size": {
+     "first_hour_under_1pct": {
+      "n": 14,
+      "avg_R": 0.83,
+      "ci90": [
+       0.354,
+       1.247
+      ]
+     },
+     "1_to_2pct": {
+      "n": 13,
+      "avg_R": 0.206,
+      "ci90": [
+       -0.326,
+       0.739
+      ]
+     },
+     "over_2pct": {
+      "n": 14,
+      "avg_R": 0.842,
+      "ci90": [
+       0.367,
+       1.258
+      ]
+     }
+    }
+   },
+   "engine_gates_before_1_3": {
+    "signalled": 34,
+    "signalled_avg_R": 0.547,
+    "blocked": 7,
+    "blocked_avg_R": 1.072,
+    "by_block": {
+     "mid-range": {
+      "n": 6,
+      "avg_R": 1.01
+     },
+     "extreme volatility regime": {
+      "n": 1,
+      "avg_R": 1.443
+     }
+    },
+    "note": "engine 1.3.0 trades this rule as tested: those chart-setup filters are warnings for it"
+   },
+   "trades": [
+    {
+     "date": "2021-01-27",
+     "side": 1,
+     "R": -1.075,
+     "outcome": "stop",
+     "minutes_held": 263,
+     "mae_R": -1.0,
+     "mfe_R": 0.76,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2021-03-17",
+     "side": 1,
+     "R": 1.403,
+     "outcome": "time",
+     "minutes_held": 1381,
+     "mae_R": -0.66,
+     "mfe_R": 1.48,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2021-04-28",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 393,
+     "mae_R": -0.65,
+     "mfe_R": 1.5,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2021-06-16",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 781,
+     "mae_R": -0.85,
+     "mfe_R": 1.52,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2021-07-28",
+     "side": 1,
+     "R": -1.075,
+     "outcome": "stop",
+     "minutes_held": 383,
+     "mae_R": -1.0,
+     "mfe_R": 0.17,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2021-09-22",
+     "side": 1,
+     "R": 1.439,
+     "outcome": "target",
+     "minutes_held": 310,
+     "mae_R": -0.04,
+     "mfe_R": 1.5,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2021-11-03",
+     "side": 1,
+     "R": 1.435,
+     "outcome": "target",
+     "minutes_held": 361,
+     "mae_R": -0.32,
+     "mfe_R": 1.55,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2021-12-15",
+     "side": 1,
+     "R": 1.439,
+     "outcome": "target",
+     "minutes_held": 849,
+     "mae_R": -0.2,
+     "mfe_R": 1.52,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2022-03-16",
+     "side": -1,
+     "R": -1.077,
+     "outcome": "stop",
+     "minutes_held": 17,
+     "mae_R": -1.0,
+     "mfe_R": 0.16,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2022-05-04",
+     "side": 1,
+     "R": 1.427,
+     "outcome": "target",
+     "minutes_held": 348,
+     "mae_R": -0.18,
+     "mfe_R": 1.51,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2022-06-15",
+     "side": 1,
+     "R": 1.47,
+     "outcome": "target",
+     "minutes_held": 185,
+     "mae_R": -0.05,
+     "mfe_R": 1.6,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2022-07-27",
+     "side": 1,
+     "R": 1.432,
+     "outcome": "target",
+     "minutes_held": 286,
+     "mae_R": -0.03,
+     "mfe_R": 1.62,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2022-09-21",
+     "side": 1,
+     "R": -1.046,
+     "outcome": "stop",
+     "minutes_held": 40,
+     "mae_R": -1.0,
+     "mfe_R": 0.05,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2022-11-02",
+     "side": 1,
+     "R": -1.062,
+     "outcome": "stop",
+     "minutes_held": 32,
+     "mae_R": -1.0,
+     "mfe_R": 0.5,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2022-12-14",
+     "side": -1,
+     "R": 0.596,
+     "outcome": "time",
+     "minutes_held": 1381,
+     "mae_R": -0.62,
+     "mfe_R": 1.23,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2023-02-01",
+     "side": 1,
+     "R": 1.444,
+     "outcome": "target",
+     "minutes_held": 286,
+     "mae_R": -0.15,
+     "mfe_R": 1.52,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2023-03-22",
+     "side": -1,
+     "R": 1.442,
+     "outcome": "target",
+     "minutes_held": 45,
+     "mae_R": -0.03,
+     "mfe_R": 1.51,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2023-05-03",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 330,
+     "mae_R": -0.35,
+     "mfe_R": 1.52,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2023-06-14",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 66,
+     "mae_R": -0.32,
+     "mfe_R": 1.56,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2023-07-26",
+     "side": 1,
+     "R": -0.028,
+     "outcome": "time",
+     "minutes_held": 1381,
+     "mae_R": -0.69,
+     "mfe_R": 0.89,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2023-11-01",
+     "side": -1,
+     "R": 1.452,
+     "outcome": "target",
+     "minutes_held": 89,
+     "mae_R": -0.3,
+     "mfe_R": 1.52,
+     "presser_flip": true,
+     "btc_agrees": false
+    },
+    {
+     "date": "2023-12-13",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 946,
+     "mae_R": -0.39,
+     "mfe_R": 1.5,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2024-01-31",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 85,
+     "mae_R": -0.1,
+     "mfe_R": 1.61,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2024-03-20",
+     "side": 1,
+     "R": 1.443,
+     "outcome": "target",
+     "minutes_held": 343,
+     "mae_R": -0.43,
+     "mfe_R": 1.64,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2024-05-01",
+     "side": 1,
+     "R": -1.052,
+     "outcome": "stop",
+     "minutes_held": 35,
+     "mae_R": -1.0,
+     "mfe_R": 0.27,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2024-07-31",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 119,
+     "mae_R": -0.16,
+     "mfe_R": 1.53,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2024-09-18",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 356,
+     "mae_R": -0.87,
+     "mfe_R": 1.57,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2024-12-18",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 358,
+     "mae_R": -0.21,
+     "mfe_R": 1.51,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-01-29",
+     "side": 1,
+     "R": 1.433,
+     "outcome": "target",
+     "minutes_held": 553,
+     "mae_R": -0.72,
+     "mfe_R": 1.53,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-03-19",
+     "side": 1,
+     "R": -1.075,
+     "outcome": "stop",
+     "minutes_held": 1204,
+     "mae_R": -1.0,
+     "mfe_R": 0.96,
+     "presser_flip": true,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-05-07",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 785,
+     "mae_R": -0.4,
+     "mfe_R": 1.53,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-06-18",
+     "side": -1,
+     "R": -1.077,
+     "outcome": "stop",
+     "minutes_held": 114,
+     "mae_R": -1.0,
+     "mfe_R": 0.09,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-07-30",
+     "side": -1,
+     "R": -1.077,
+     "outcome": "stop",
+     "minutes_held": 466,
+     "mae_R": -1.0,
+     "mfe_R": 1.28,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-09-17",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 187,
+     "mae_R": -0.02,
+     "mfe_R": 1.5,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2025-10-29",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 1118,
+     "mae_R": -0.96,
+     "mfe_R": 1.52,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2025-12-10",
+     "side": 1,
+     "R": -1.075,
+     "outcome": "stop",
+     "minutes_held": 276,
+     "mae_R": -1.0,
+     "mfe_R": 1.12,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2026-03-18",
+     "side": -1,
+     "R": 0.581,
+     "outcome": "time",
+     "minutes_held": 1381,
+     "mae_R": -0.82,
+     "mfe_R": 1.15,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2026-04-29",
+     "side": -1,
+     "R": -0.494,
+     "outcome": "time",
+     "minutes_held": 1381,
+     "mae_R": -0.83,
+     "mfe_R": 0.15,
+     "presser_flip": false,
+     "btc_agrees": true
+    },
+    {
+     "date": "2026-06-17",
+     "side": -1,
+     "R": 1.426,
+     "outcome": "target",
+     "minutes_held": 605,
+     "mae_R": -0.11,
+     "mfe_R": 1.5,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2026-07-29",
+     "side": 1,
+     "R": -1.075,
+     "outcome": "stop",
+     "minutes_held": 126,
+     "mae_R": -1.0,
+     "mfe_R": 0.08,
+     "presser_flip": false,
+     "btc_agrees": false
+    },
+    {
+     "date": "2026-09-16",
+     "side": 1,
+     "R": 1.423,
+     "outcome": "target",
+     "minutes_held": 1166,
+     "mae_R": -0.38,
+     "mfe_R": 1.55,
+     "presser_flip": false,
+     "btc_agrees": true
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,18 @@
+# Netlify fetches these for the app because the sources do not allow browser requests (status 200 = proxy; the query
+# string is passed on). Each rule is pinned to the exact data endpoint the engine reads, so this site cannot be used to
+# show other pages of those sites (proxied pages would run with this site's storage) or as a general relay.
+/proxy/ff/ff_calendar_thisweek.json                        https://nfs.faireconomy.media/ff_calendar_thisweek.json             200
+/proxy/coindesk/arc/outboundfeeds/rss/                     https://www.coindesk.com/arc/outboundfeeds/rss/                     200
+/proxy/cointelegraph/rss                                   https://cointelegraph.com/rss                                       200
+/proxy/decrypt/feed                                        https://decrypt.co/feed                                             200
+/proxy/theblock/rss.xml                                    https://www.theblock.co/rss.xml                                     200
+/proxy/fng/fng/                                            https://api.alternative.me/fng/                                     200
+/proxy/deribit/api/v2/public/get_volatility_index_data     https://www.deribit.com/api/v2/public/get_volatility_index_data     200
+/proxy/deribit/api/v2/public/get_time                      https://www.deribit.com/api/v2/public/get_time                      200
+/proxy/coingecko/api/v3/global                             https://api.coingecko.com/api/v3/global                             200
+/proxy/coingecko/api/v3/ping                               https://api.coingecko.com/api/v3/ping                               200
+/proxy/coingecko/api/v3/simple/price                       https://api.coingecko.com/api/v3/simple/price                       200
+# Exchanges are called directly from the browser first; these JSON APIs are only a fallback.
+/proxy/binance/fapi/v1/*                                   https://fapi.binance.com/fapi/v1/:splat                             200
+/proxy/binance/futures/data/*                              https://fapi.binance.com/futures/data/:splat                        200
+/proxy/bybit/v5/market/*                                   https://api.bybit.com/v5/market/:splat                              200

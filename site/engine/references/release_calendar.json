@@ -1,0 +1,465 @@
+{
+ "built": "2026-10-21",
+ "covers_until": "2027-12-15",
+ "note": "Official US release schedule (BLS for CPI, PPI and the jobs report; the Federal Reserve for FOMC decisions; BEA for PCE and GDP; BEA had not published 2027 dates). Times are US Eastern, converted to UTC per date. The live calendar feed stays the primary source; this file fills gaps (the feed covers one week) and cross-checks it. Agencies can reschedule: check the source pages when a date matters.",
+ "releases": [
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2026-10-28",
+   "time_et": "14:00",
+   "t": 1793210400000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later"
+  },
+  {
+   "kind": "GDP",
+   "title": "Advance GDP q/q",
+   "date": "2026-10-29",
+   "time_et": "08:30",
+   "t": 1793277000000,
+   "source": "https://www.bea.gov/news/schedule"
+  },
+  {
+   "kind": "PCE",
+   "title": "Core PCE Price Index m/m",
+   "date": "2026-10-29",
+   "time_et": "08:30",
+   "t": 1793277000000,
+   "source": "https://www.bea.gov/news/schedule"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2026-11-06",
+   "time_et": "08:30",
+   "t": 1793971800000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2026-11-10",
+   "time_et": "08:30",
+   "t": 1794317400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2026-11-13",
+   "time_et": "08:30",
+   "t": 1794576600000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "PCE",
+   "title": "Core PCE Price Index m/m",
+   "date": "2026-11-25",
+   "time_et": "08:30",
+   "t": 1795613400000,
+   "source": "https://www.bea.gov/news/schedule"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2026-12-04",
+   "time_et": "08:30",
+   "t": 1796391000000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2026-12-09",
+   "time_et": "14:00",
+   "t": 1796842800000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; with economic projections (dot plot)"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2026-12-10",
+   "time_et": "08:30",
+   "t": 1796909400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2026-12-15",
+   "time_et": "08:30",
+   "t": 1797341400000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "PCE",
+   "title": "Core PCE Price Index m/m",
+   "date": "2026-12-23",
+   "time_et": "08:30",
+   "t": 1798032600000,
+   "source": "https://www.bea.gov/news/schedule"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-01-08",
+   "time_et": "08:30",
+   "t": 1799415000000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-01-13",
+   "time_et": "08:30",
+   "t": 1799847000000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-01-14",
+   "time_et": "08:30",
+   "t": 1799933400000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-01-27",
+   "time_et": "14:00",
+   "t": 1801076400000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-02-05",
+   "time_et": "08:30",
+   "t": 1801834200000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-02-11",
+   "time_et": "08:30",
+   "t": 1802352600000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-02-12",
+   "time_et": "08:30",
+   "t": 1802439000000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-03-05",
+   "time_et": "08:30",
+   "t": 1804253400000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-03-10",
+   "time_et": "08:30",
+   "t": 1804685400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-03-12",
+   "time_et": "08:30",
+   "t": 1804858200000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-03-17",
+   "time_et": "14:00",
+   "t": 1805306400000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; with economic projections (dot plot); date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-04-02",
+   "time_et": "08:30",
+   "t": 1806669000000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-04-13",
+   "time_et": "08:30",
+   "t": 1807619400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-04-14",
+   "time_et": "08:30",
+   "t": 1807705800000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-04-28",
+   "time_et": "14:00",
+   "t": 1808935200000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-05-07",
+   "time_et": "08:30",
+   "t": 1809693000000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-05-12",
+   "time_et": "08:30",
+   "t": 1810125000000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-05-13",
+   "time_et": "08:30",
+   "t": 1810211400000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-06-04",
+   "time_et": "08:30",
+   "t": 1812112200000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-06-09",
+   "time_et": "14:00",
+   "t": 1812564000000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; with economic projections (dot plot); date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-06-10",
+   "time_et": "08:30",
+   "t": 1812630600000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-06-11",
+   "time_et": "08:30",
+   "t": 1812717000000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-07-02",
+   "time_et": "08:30",
+   "t": 1814531400000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-07-14",
+   "time_et": "08:30",
+   "t": 1815568200000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-07-15",
+   "time_et": "08:30",
+   "t": 1815654600000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-07-28",
+   "time_et": "14:00",
+   "t": 1816797600000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-08-06",
+   "time_et": "08:30",
+   "t": 1817555400000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-08-10",
+   "time_et": "08:30",
+   "t": 1817901000000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-08-11",
+   "time_et": "08:30",
+   "t": 1817987400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-09-03",
+   "time_et": "08:30",
+   "t": 1819974600000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-09-10",
+   "time_et": "08:30",
+   "t": 1820579400000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-09-14",
+   "time_et": "08:30",
+   "t": 1820925000000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-09-15",
+   "time_et": "14:00",
+   "t": 1821031200000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; with economic projections (dot plot); date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-10-08",
+   "time_et": "08:30",
+   "t": 1822998600000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-10-14",
+   "time_et": "08:30",
+   "t": 1823517000000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-10-15",
+   "time_et": "08:30",
+   "t": 1823603400000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-10-27",
+   "time_et": "14:00",
+   "t": 1824660000000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-11-05",
+   "time_et": "08:30",
+   "t": 1825417800000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-11-10",
+   "time_et": "08:30",
+   "t": 1825853400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-11-12",
+   "time_et": "08:30",
+   "t": 1826026200000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  },
+  {
+   "kind": "NFP",
+   "title": "Non-Farm Employment Change",
+   "date": "2027-12-03",
+   "time_et": "08:30",
+   "t": 1827840600000,
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+   "kind": "FOMC",
+   "title": "FOMC Statement",
+   "date": "2027-12-08",
+   "time_et": "14:00",
+   "t": 1828292400000,
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "note": "press conference 30 minutes later; with economic projections (dot plot); date tentative until confirmed at the meeting before"
+  },
+  {
+   "kind": "CPI",
+   "title": "CPI m/m",
+   "date": "2027-12-10",
+   "time_et": "08:30",
+   "t": 1828445400000,
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm"
+  },
+  {
+   "kind": "PPI",
+   "title": "PPI m/m",
+   "date": "2027-12-15",
+   "time_et": "08:30",
+   "t": 1828877400000,
+   "source": "https://www.bls.gov/schedule/news_release/ppi.htm"
+  }
+ ]
+}

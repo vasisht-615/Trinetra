@@ -1,0 +1,9 @@
+# Netlify settings for Vigil. No build step: the site in site/ is already built. Netlify installs package.json's one
+# dependency (@netlify/blobs) for the sync function in netlify/functions/.
+[build]
+  publish = "site"
+  command = ""
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"

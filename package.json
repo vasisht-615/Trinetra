@@ -1,0 +1,9 @@
+{
+  "name": "desk-app",
+  "private": true,
+  "type": "module",
+  "description": "DESK web app: the crypto-futures-desk engine in the browser, plus encrypted sync (Netlify Functions + Blobs).",
+  "dependencies": {
+    "@netlify/blobs": "11.1.4"
+  }
+}
