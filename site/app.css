@@ -92,6 +92,7 @@ button, input, select { font: inherit; color: inherit; }
 .verdict[data-tone="calm"] h1 { color: var(--ink); }
 .verdict[data-tone="bad"] h1 { color: var(--ember); }
 .verdict[data-tone="checking"] h1 { color: var(--slate); }
+.verdict[data-tone="warn"] h1 { color: var(--brass); }
 .swap { animation: swap .32s var(--ease); }
 @keyframes swap { from { opacity: 0; transform: translateY(8px); } }
 .progress { height: 3px; border-radius: 3px; background: var(--wash); overflow: hidden; max-width: 320px; margin-top: 6px; }

@@ -129,6 +129,9 @@ async function callTool(store, token, name, args) {
   if (name === "vigil_status") {
     const lines = [freshness({ ...f, at: feed.at }), "Coins: " + (f.settings && f.settings.watchlist || []).join(", "),
       "Signals now: " + (((f.today || {}).signals || []).map((s) => coinOf(s.symbol) + " " + s.decision).join(", ") || "none"),
+      ...(((f.today || {}).coins || []).filter((c) => c.blocked_signal).map((c) => "Paused: the tested " + coinOf(c.symbol) + " rule fired (" +
+        c.blocked_signal.side + ") but was stopped by: " + (c.blocked_signal.by || []).join("; ") + ". Nothing to place.")),
+      ...(((f.today || {}).coins || []).filter((c) => c.error).map((c) => "Not checked: " + coinOf(c.symbol) + " (no market data; this is not a 'no signal' answer)")),
       "Problems shown in the app: " + ((f.health || []).filter((h) => h.level !== "ok").map((h) => h.title).join("; ") || "none")];
     return text(lines.join("\n"));
   }

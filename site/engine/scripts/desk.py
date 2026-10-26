@@ -54,7 +54,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 UA = "crypto-futures-desk/%s (personal research; python-urllib)" % VERSION
 
 BINANCE = "https://fapi.binance.com"
@@ -5124,6 +5124,13 @@ def cmd_brief(args, home, cfg):
         _quiet(cmd_plan, argv, home, cfg, args)
         plan = read_json(os.path.join(rd, "plan.json"), "plan")
         notes = []
+        dirty = False
+        if c["kind"] == "event" and c.get("close_by"):
+            # exactly the tested time stop (24 hours after the release, or 60 minutes before the next release), not a time
+            # rebuilt from the rounded hold above (that drifted by a few seconds and showed 4:59 pm for 5:00 pm)
+            plan["close_by"] = int(c["close_by"])
+            plan["horizon_hours"] = round(max(0.0, (plan["close_by"] - int(plan.get("created_at") or now)) / 3600000.0), 4)
+            dirty = True
         if c["kind"] == "event" and c.get("signal_entry") is not None:
             notes.append("entry: a market order now, before %s. The signal price was %s (minute %s); the price now is %s (%+.2f%%), so the "
                          "stop (%.2f%% away) and targets are measured from it, as tested (entering 5 and 15 minutes late, measured from "
@@ -5134,6 +5141,8 @@ def cmd_brief(args, home, cfg):
             notes.append(hold_note)
         if notes:
             plan.setdefault("notes", []).extend(notes)
+            dirty = True
+        if dirty:
             write_json(os.path.join(rd, "plan.json"), plan)
         res["hold_note"] = hold_note
         try:
@@ -5143,8 +5152,15 @@ def cmd_brief(args, home, cfg):
             snap["errors"].append("history test failed: %s" % ex)
         _quiet(cmd_check, ["check", "--run", rd], home, cfg, args)
         chk = read_json(os.path.join(rd, "check.json"), "check")
-        res["candidate"] = {k: c.get(k) for k in ("setup", "side", "kind", "score", "entry", "stop", "target1", "target2", "expires")}
+        res["candidate"] = {k: c.get(k) for k in ("setup", "side", "kind", "score", "entry", "stop", "target1", "target2", "expires", "close_by")}
         res["decision"] = engine_decision(plan, sim, chk, ev_stats)
+        D = res["decision"]
+        if (c["kind"] == "event" and D.get("decision") == "NO TRADE" and D.get("blocks")
+                and str((sim or {}).get("verdict") or "").startswith("POSITIVE") and (D.get("ev_r") or 0) >= 0.10):
+            # a tested news rule fired and only the rules check stopped it (the news check, a loss limit...): say so, so the
+            # app does not report "no signal tonight" and the user sees exactly what was blocked and why
+            res["blocked_signal"] = {"setup": c["setup"], "side": c["side"], "entry": c.get("entry"), "expires": c.get("expires"),
+                                     "by": [b.split(":")[0].strip() for b in D["blocks"]]}
     else:
         weak = [c for c in (E or {}).get("candidates") or [] if c.get("evidence") in ("AVOID", "UNTESTED")]
         dec = "NO TRADE"
@@ -5521,6 +5537,12 @@ def cmd_today(args, home, cfg):
     except DeskError as e:
         T["headlines"], T["headlines_ok"] = [], False
         T["errors"].append("headlines: %s" % e)
+    # In the first 80 minutes after a release with a proven news rule, that rule's coins are checked first: the signal
+    # comes sooner, and a data problem on another coin later in the run cannot hold it up.
+    live = [g for g in groups if g["t"] <= now <= g["t"] + 80 * 60000]
+    first = [norm_symbol(coin) for g in live for coin, _ in proven_news_rules(g["kind"], stats)]
+    if first:
+        coins = [c for c in coins if c in first] + [c for c in coins if c not in first]
     for sym in coins:
         try:
             code, out = _quiet(cmd_brief, ["--json", "brief", sym], home, cfg, args)
@@ -5537,7 +5559,7 @@ def cmd_today(args, home, cfg):
                            "why": D.get("why"), "blocks": D.get("blocks") or [], "ev_r": D.get("ev_r"), "p0": D.get("p0"),
                            "candidate": b.get("candidate"), "event": b.get("event"), "event_ideas": b.get("event_ideas") or [],
                            "packet": b.get("packet"), "run_dir": b.get("run_dir"), "hold_note": b.get("hold_note"),
-                           "error": D.get("decision") == "NOT CHECKED"})
+                           "blocked_signal": b.get("blocked_signal"), "error": D.get("decision") == "NOT CHECKED"})
     T["signals"] = [c for c in T["coins"] if str(c.get("decision") or "").startswith("SIGNAL")]
     nctx = load_news_context(home, now)
     if nctx:

@@ -35,11 +35,15 @@ TIMED_OUT = "no answer in time"
 GATEWAY = (502, 503, 504)        # the site's proxy could not get an answer from the source
 RUN = {"deadline": None}         # the current run's time limit (epoch seconds): a blocked network can never stall a run
 BUDGET = {"today": 300, "brief": 150, "verify-news": 900, "selftest": 300}     # seconds per command; others 120
+OK_HOSTS = set()                 # hosts that answered in this run: one slow answer from them is a hiccup, not a blocked network
+STRIKES = {}                     # host -> requests in a row that got no answer in time, for hosts in OK_HOSTS
 
 
 def start_run(seconds):
     """Each run starts fresh, as each command line run does: no host is still marked down from an earlier run."""
     desk.DOWN_HOSTS.clear()
+    OK_HOSTS.clear()
+    STRIKES.clear()
     RUN["deadline"] = time.time() + seconds
 
 
@@ -103,6 +107,8 @@ def browser_fetch(self, url, timeout=15):
                     last = BLOCKED
             if status == 200:
                 ROUTE[host] = "proxy" if proxied else "direct"
+                OK_HOSTS.add(host)
+                STRIKES[host] = 0
                 return text
             if status == 0:
                 if last != TIMED_OUT:
@@ -135,14 +141,23 @@ def browser_fetch(self, url, timeout=15):
             # the network works (the proxy answered), so the browser itself refuses the direct call: stop trying it
             ROUTE[host] = "proxy"
             soft = [s for s in soft if s != "direct"]
-        if not soft or not tries or timeouts == tries or attempt == 2:
-            break                                             # nothing a retry could fix, or every attempt timed out
-        left = _left()
+        if not soft or not tries or attempt == 2:
+            break                                             # nothing a retry could fix
+        if timeouts == tries and not (host in OK_HOSTS and attempt == 0):
+            break                                             # every attempt timed out: retried once, and only for a host
+        left = _left()                                        # that answered earlier in this run (a hiccup, not a block)
         if left is not None and left < 4:
             break
         time.sleep(1.5 * (attempt + 1))
     if not answered:
-        desk.DOWN_HOSTS[host] = (time.time(), last)
+        if last == TIMED_OUT and host in OK_HOSTS:
+            # it answered earlier in this run: skip it only after two requests in a row got no answer in time, so one
+            # slow answer cannot take a working exchange away from the rest of the run (and from the coins checked later)
+            STRIKES[host] = STRIKES.get(host, 0) + 1
+            if STRIKES[host] >= 2:
+                desk.DOWN_HOSTS[host] = (time.time(), last)
+        else:
+            desk.DOWN_HOSTS[host] = (time.time(), last)
     raise desk.DeskError("could not reach %s (%s)" % (host, last))
 
 

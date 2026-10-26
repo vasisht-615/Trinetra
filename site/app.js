@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.0-c9b5e19cf0e8";
+const BUILD = "1.3.1-bf55332051f5";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -195,7 +195,7 @@ window.addEventListener("unhandledrejection", (e) => log("error", "unhandled: " 
 
 // ================================================================ state
 const S = {
-  meta: null, settings: null, upcoming: [], today: null, todayAt: 0, todayDemo: false, todayError: null, running: false,
+  meta: null, settings: null, upcoming: [], today: null, todayAt: 0, todayFrom: 0, lastTry: 0, todayDemo: false, todayError: null, running: false,
   health: null, signalPlans: {}, records: null, perp: null, selftest: null, persisted: null, updateReady: false, coin: {},
 };
 const KIND = {
@@ -308,11 +308,12 @@ async function runToday(reason) {
   let rerun = false;
   S.running = true; S.todayError = null;
   const isDemo = demo(), t0 = Date.now();
+  S.lastTry = t0;
   renderStatus(); if (view() === "home") renderHome();
   try {
     const T = await engineJSON(isDemo, ["today"]);
     if (demo() !== isDemo) { rerun = true; return; }                    // switched mid-run: run again once this one ends
-    S.today = T; S.todayAt = Date.now(); S.todayDemo = isDemo;
+    S.today = T; S.todayAt = Date.now(); S.todayFrom = t0; S.todayDemo = isDemo;
     const failed = (T.coins || []).filter((c) => c.error).map((c) => coinOf(c.symbol));
     log("run", "today " + (reason || "") + " in " + Math.round((Date.now() - t0) / 1000) + " s", { demo: isDemo, signals: (T.signals || []).map((c) => coinOf(c.symbol)),
       not_checked: failed, errors: (T.errors || []).slice(0, 5), calendar: String(T.calendar_source || "").slice(0, 40) });
@@ -614,7 +615,7 @@ async function buildFeed() {
   try { record = recordText(JSON.parse(await call("records"))); } catch (e) { /* kept as is */ }
   return { v: 1, build: BUILD, engine: (S.meta || {}).engine, checked_at: S.todayAt, text: todayText(T, false),
     today: { as_of: T.as_of, calendar_source: T.calendar_source,
-      coins: (T.coins || []).map((c) => pick(c, ["symbol", "decision", "price", "why", "error"])),
+      coins: (T.coins || []).map((c) => pick(c, ["symbol", "decision", "price", "why", "error", "blocked_signal"])),
       signals: (T.signals || []).map((c) => ({ symbol: c.symbol, decision: c.decision, hold_note: c.hold_note,
         candidate: pick(c.candidate, ["setup", "side", "entry", "stop", "target1", "target2", "expires", "close_by", "evidence"]),
         plan: S.signalPlans[c.symbol] ? pick(S.signalPlans[c.symbol], ["entry", "entry_type", "stop", "targets", "qty", "notional", "leverage", "max_loss_at_stop", "close_by", "notes"]) : null })),
@@ -757,7 +758,16 @@ function watchAlerts() {
   if (fn) {
     const t = fn.fed.t;
     if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Stay flat. Vigil checks SOL at " + clock(fn.read) + ".", "fed5-" + t);
-    if (S.todayAt >= fn.read && now < fn.read + 30 * 60000 && S.today && !(S.today.signals || []).length) notify("No SOL signal tonight", "The Fed rule didn't fire. Nothing to do.", "fednone-" + t);
+    // The read-time outcome, only from a check that started at or after the read time, and only what it really found:
+    // "no signal" needs SOL to have been checked; a SOL check that failed or was paused says so instead.
+    if ((S.todayFrom || 0) >= fn.read && now < fn.read + 30 * 60000 && S.today && !(S.today.signals || []).length) {
+      const sol = (S.today.coins || []).find((c) => c.symbol === "SOLUSDT");
+      const last = now >= fn.read + 14 * 60000;
+      if (sol && sol.error && last) notify("Vigil couldn't check SOL tonight", "It couldn't get SOL's prices in time, so the Fed rule was not checked. This is not a 'no signal' answer.", "fedsolfail-" + t);
+      else if (sol && sol.error) notify("Vigil couldn't check SOL yet", "It's trying again every 90 seconds until " + clock(fn.read + 14 * 60000) + ". Keep Vigil open.", "fedsolretry-" + t);
+      else if (sol && sol.blocked_signal) notify("The SOL rule fired, but it's paused", "The news check paused new trades. Open Vigil for the reason; nothing to place.", "fedblocked-" + t);
+      else if (sol) notify("No SOL signal tonight", "The Fed rule didn't fire. Nothing to do.", "fednone-" + t);
+    }
     if (now >= fn.read && now < fn.read + 15 * 60000 && S.todayError) notify("Vigil can't check the Fed rule", "It couldn't reach the market: check your connection and keep Vigil open.", "fedfail-" + t);
   }
   for (const r of S.openTrades || []) {
@@ -891,6 +901,16 @@ function verdictBlock() {
   } else if (fn && fn.fed.t - Date.now() < 48 * 3600000 && fn.fed.t > Date.now()) {
     why = "Nothing has an edge right now. The Fed decision is " + inWords(fn.fed.t).replace(/^/, "in ") + ": that is the one night the tested rule can fire.";
   }
+  const blocked = coins.find((c) => c.blocked_signal);
+  if (blocked) {
+    // a tested rule fired and only the rules check stopped it: say exactly that, never "no tested edge"
+    const bs = blocked.blocked_signal, k = coinOf(blocked.symbol);
+    const byNews = (bs.by || []).some((b) => /news check/i.test(b));
+    wrap.dataset.tone = "warn";
+    h = k + " rule paused.";
+    why = "The tested " + k + " rule fired (" + (bs.side === "short" ? "sell" : "buy") + "), but " + (byNews ? "the news check paused new trades" : "a rule blocked it: " + plain((bs.by || []).join("; "))) +
+      ". No trade: the news can pause or shrink a trade, never create one. The blocked trade is recorded with what it would have done.";
+  }
   if (failed.length) why += " Not checked: " + failed.map((c) => coinOf(c.symbol)).join(", ") + ".";
   add(wrap, [el("h1", {}, h), el("p", { class: "why" }, why), when]);
   return wrap;
@@ -900,7 +920,10 @@ function ticketBlock(c) {
   const sell = cd.side === "short", coin = coinOf(c.symbol);
   const e = plan.entry || cd.entry, st = plan.stop || cd.stop, t1 = ((plan.targets || [])[0] || {}).price || cd.target1;
   const stopPct = Math.abs(e - st) / e * 100, tgtPct = Math.abs(t1 - e) / e * 100;
-  const isEvent = !!(cd.reprice || cd.signal_time);
+  const isEvent = cd.kind === "event" || !!(cd.reprice || cd.signal_time);
+  const rm = Number(plan.risk_multiplier || 1), nm = Number(plan.news_multiplier || 1);
+  const sizeTxt = rm < 1 && nm < 1 ? " Sized at a quarter of your normal risk: half while your record is new, and half again for the news check."
+    : rm < 1 ? " Sized at half your normal risk while your record is new." : nm < 1 ? " Sized at half your normal risk because of the news check." : "";
   const t = el("div", { class: "ticket swap" },
     el("h1", {}, (sell ? "Sell " : "Buy ") + coin + " now."),
     cd.expires ? el("p", { class: "deadline" }, (isEvent ? "A market order before " : "Order valid until "), el("b", {}, clock(cd.expires)), ". ",
@@ -911,7 +934,7 @@ function ticketBlock(c) {
       el("li", {}, el("span", {}, "Set the stop ", el("b", {}, num(stopPct, 2) + "% " + (sell ? "above" : "below")), " your fill. At " + num(e) + " that is " + num(st) + ".")),
       el("li", {}, el("span", {}, "Set the target ", el("b", {}, num(tgtPct, 2) + "% " + (sell ? "below" : "above")), " your fill. At " + num(e) + " that is " + num(t1) + "."))),
     el("p", { class: "fine" }, "If stopped you lose about " + num(plan.max_loss_at_stop, 2) + " USDT" + (plan.inr ? " (" + plan.inr.currency + " " + num(plan.inr.max_loss, 0) + ")" : "") +
-      ". Sized at half your normal risk while your record is new." + (plan.close_by ? " Close it by " + dayTime(plan.close_by) + " at the latest." : "") + (c.hold_note ? " The hold is shorter than usual because of a release the next day." : "")),
+      "." + sizeTxt + (plan.close_by ? " Close it by " + dayTime(plan.close_by) + " at the latest." : "") + (c.hold_note ? " The hold is shorter than usual because of a release the next day." : "")),
     S.todayDemo ? el("p", { class: "fine" }, el("b", {}, "Demo data: this is not a real signal.")) :
       el("div", { class: "row" },
         el("button", { class: "btn solid", type: "button", onclick: () => logTrade(c, plan) }, "I placed it"),
@@ -1748,7 +1771,14 @@ setInterval(() => {
   document.querySelectorAll("[data-ago]").forEach((n) => (n.textContent = "Checked " + ago(Number(n.dataset.ago))));
   if (!engineReady || S.running || document.visibilityState !== "visible") return;
   const fn = fedNight(), now = Date.now();
-  if (fn && now >= fn.read && now < fn.read + 14 * 60000 && S.todayAt < fn.read) { log("app", "Fed-night check at the read time"); runToday("Fed night"); return; }
+  if (fn && now >= fn.read && now < fn.read + 14 * 60000) {
+    // The Fed-night check must start at or after the read time (a check that started earlier saw the first hour
+    // unfinished), and a failed SOL check is retried every 90 seconds while the 15-minute window is open.
+    const sol = S.today && (S.today.coins || []).find((c) => c.symbol === "SOLUSDT");
+    const first = (S.todayFrom || 0) < fn.read;
+    const retry = !first && (S.todayError || (sol && sol.error)) && now - (S.lastTry || 0) > 90000;
+    if (first || retry) { log("app", first ? "Fed-night check at the read time" : "Fed-night check again (SOL was not checked)"); runToday("Fed night"); return; }
+  }
   if (now - S.todayAt > 15 * 60000) runToday("every 15 min");
 }, 30000);
 document.addEventListener("visibilitychange", () => {
