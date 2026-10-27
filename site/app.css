@@ -433,3 +433,9 @@ details.rejected .kv { opacity: .75; }
 @media (max-width: 520px) { .chart-legend { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100% - 70px); } }
 #claude, #sync { display: grid; gap: 12px; }
 #claude > h2, #sync > h2, #claude > p, #sync > p { margin: 0; }
+
+.signal-alarm { position: fixed; left: 12px; right: 12px; top: 12px; z-index: 1000; display: grid; gap: 6px; padding: 16px;
+  border-radius: 14px; background: var(--brass-fill); color: var(--brass-ink); box-shadow: var(--shadow); animation: pulse 1.2s ease-in-out 3; }
+.signal-alarm b { font-family: var(--display); font-size: 1.4rem; }
+@keyframes pulse { 50% { transform: scale(1.02); } }
+@media (prefers-reduced-motion: reduce) { .signal-alarm { animation: none; } }

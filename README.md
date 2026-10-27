@@ -22,7 +22,7 @@ This repository is what Netlify deploys:
 2. **Vigil:** open the site, answer the two setup questions. On your other devices, open Settings, Sync, Turn on sync
    on the first one and scan its QR code with the others.
 3. **Claude:** in Vigil, Settings, Set up the connector. Then in Claude, Settings, Connectors, Add custom connector:
-   name `Vigil`, the URL Vigil shows, and the request header `Authorization` with the value Vigil shows. Turn it on
-   in chats under +, Connectors, and add it to your scheduled research tasks.
+   name `Vigil` and the private URL Vigil shows (leave the OAuth fields empty). Turn it on in chats under +,
+   Connectors, and add it to your scheduled research tasks.
 
 

@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.1-cb2a775312bd";
+const BUILD = "1.3.1-07f28aa76331";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -409,8 +409,43 @@ function notifySignals(T) {
     if (store("desk-notified") === key) continue;
     store("desk-notified", key);
     log("signal", "SIGNAL " + c.symbol + " " + cd.setup + " " + cd.side, { entry: cd.entry, stop: cd.stop, target: cd.target1, expires: cd.expires, demo: S.todayDemo });
-    if (!S.todayDemo) showNote((cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now", "Market order before " + clock(cd.expires) + ". Open Vigil for the stop and target.", key);
+    if (S.todayDemo) continue;
+    const title = (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
+    const body = "Signal: " + (cd.side === "short" ? "a market sell" : "a market buy") + " before " + clock(cd.expires) + ". Open Vigil for the size, stop and target.";
+    // a signal is the one alert that must not be missed: the phone/computer notification (when allowed), a sound,
+    // a vibration, a banner that stays until tapped, and the tab title flashing until Vigil is looked at
+    showNote(title, body, key);
+    log("app", "alert: " + title + ": " + body);
+    signalAlarm(title, body);
   }
+}
+// Browsers allow sound only after a tap or click on the page: the first one unlocks it for later alarms.
+let AUDIO = null;
+document.addEventListener("pointerdown", () => {
+  try { if (!AUDIO) AUDIO = new (window.AudioContext || window.webkitAudioContext)(); else if (AUDIO.resume) AUDIO.resume(); } catch (e) { /* no sound here */ }
+}, { passive: true });
+function signalAlarm(title, body) {
+  try {
+    if (AUDIO) {
+      const ctx = AUDIO;
+      if (ctx.resume) ctx.resume();
+      [0, 0.35, 0.7, 1.4, 1.75, 2.1].forEach((t) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 880; g.gain.value = 0.25;
+        o.connect(g); g.connect(ctx.destination);
+        o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.2);
+      });
+    }
+  } catch (e) { /* no sound allowed: the banner and notification still show */ }
+  try { if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]); } catch (e) { /* not on this device */ }
+  const bar = el("div", { class: "signal-alarm", role: "alert" }, el("b", {}, title), el("span", {}, body),
+    el("button", { class: "btn solid", type: "button", onclick: () => { bar.remove(); location.hash = "home"; } }, "Show me"));
+  document.body.appendChild(bar);
+  const base = document.title;
+  let on = false;
+  const iv = setInterval(() => { document.title = (on = !on) ? "● SIGNAL: " + title : base; }, 1000);
+  const stop = () => { if (document.visibilityState === "visible" && document.hasFocus()) { clearInterval(iv); document.title = base; window.removeEventListener("focus", stop); } };
+  setTimeout(() => window.addEventListener("focus", stop), 3000);
 }
 const needsSetup = () => !!(S.settings && !S.settings.stored && !demo());
 const watchlist = () => ((S.settings && S.settings.values.watchlist) || ["BTC", "ETH", "SOL", "XRP", "LINK"]).map((s) => coinOf(s));
