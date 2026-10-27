@@ -25,4 +25,4 @@ This repository is what Netlify deploys:
    name `Vigil`, the URL Vigil shows, and the request header `Authorization` with the value Vigil shows. Turn it on
    in chats under +, Connectors, and add it to your scheduled research tasks.
 
-Not financial advice. Most leveraged traders lose money.
+
