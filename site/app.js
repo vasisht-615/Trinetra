@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.1-bf55332051f5";
+const BUILD = "1.3.1-cb2a775312bd";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -712,22 +712,21 @@ function claudePanel() {
       }) }, "Set up the connector")),
       demo() ? el("p", { class: "small muted" }, "Turn demo data off first.") : null);
   }
-  const url = location.origin + "/api/mcp", header = "Bearer " + CL.link.token;
+  const url = location.origin + "/api/mcp/" + CL.link.token;
   return el("div", { class: "panel", id: "claude" }, el("h2", {}, "Claude connector"),
     el("p", { id: "claude-state", class: "small" + (CL.error ? " bad-text" : "") }, claudeStateText()),
     el("ol", { class: "steps-cl" },
       el("li", {}, "In Claude, open ", el("a", { href: "https://claude.ai/customize/connectors", target: "_blank", rel: "noopener noreferrer" }, "Settings, Connectors"), " and choose ", el("b", {}, "Add custom connector"), "."),
-      el("li", {}, "Name it ", el("b", {}, "Vigil"), ". Server URL:", copyRow(url, "Connector URL")),
-      el("li", {}, "Under advanced settings add a request header named ", el("b", {}, "Authorization"), " with this value:", copyRow(header, "Header value", true)),
+      el("li", {}, "Name it ", el("b", {}, "Vigil"), ". Paste this as the server URL (it contains your private token) and leave the OAuth fields empty:", copyRow(url, "Connector URL", true)),
       el("li", {}, "Save. In a chat, turn Vigil on under ", el("b", {}, "+, Connectors"), ". In each scheduled task, add Vigil under Connectors.")),
     el("div", { class: "row" },
       el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, testConnector) }, "Test the connector"),
       el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => { await sendFeed("by hand"); await pullInbox("by hand"); toast(CL.error ? "Not sent: " + CL.error : "Sent to Claude, and collected anything Claude left."); }) }, ic("refresh"), "Send now")),
-    el("p", { class: "small muted" }, "Keep the header value private: with it someone could read Vigil's latest data and leave notes (never trades). The data on this site is stored encrypted."),
+    el("p", { class: "small muted" }, "Keep this address private: with it someone could read Vigil's latest data and leave notes (never trades). The data on this site is stored encrypted."),
     el("details", { class: "more" }, el("summary", {}, "Replace or remove the token", ic("chev")), el("div", {}, el("div", { class: "row" },
       el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
         await wipeConnector(); await call("claude_link_set", newToken()); await loadClaudeLink(); syncSoon(); await sendFeed("new token");
-        toast("New token made: update the header value in Claude."); log("app", "connector token replaced"); renderSettings();
+        toast("New token made: update the connector URL in Claude."); log("app", "connector token replaced"); renderSettings();
       }) }, "Make a new token"),
       el("button", { class: "btn quiet danger", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
         await wipeConnector(); await call("claude_link_clear"); CL.link = null; syncSoon();

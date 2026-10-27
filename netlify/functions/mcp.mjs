@@ -192,4 +192,4 @@ export async function handle(req, store) {
 
 export default async (req) => handle(req, getStore({ name: "vigil-claude", consistency: "strong" }));
 
-export const config = { path: "/api/mcp" };
+export const config = { path: ["/api/mcp", "/api/mcp/*"] };

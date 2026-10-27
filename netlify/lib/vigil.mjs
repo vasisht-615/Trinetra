@@ -11,7 +11,11 @@ export const MAX_SPACES = 20;           // connector tokens this site serves
 
 export function tokenFrom(req) {
   const m = (req.headers.get("authorization") || "").match(/^Bearer\s+(\S+)\s*$/i);
-  return m && TOKEN.test(m[1]) ? m[1] : null;
+  if (m && TOKEN.test(m[1])) return m[1];
+  // Claude's custom connectors cannot send a header: the token may be the last part of the address (/api/mcp/<token>)
+  const seg = new URL(req.url).pathname.split("/").filter(Boolean);
+  const last = seg[seg.length - 1] || "";
+  return seg[0] === "api" && seg[1] === "mcp" && seg.length === 3 && TOKEN.test(last) ? last : null;
 }
 
 export const spaceId = (token) => createHash("sha256").update("vigil-claude-id:" + token).digest("hex");
