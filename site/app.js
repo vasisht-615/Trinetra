@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.1-1335fe80652f";
+const BUILD = "1.3.1-62f5af66075c";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -214,6 +214,7 @@ function setStatus(state, text) {
   const s = $("status");
   s.dataset.state = state;
   $("status-text").textContent = text;
+  if (state === "busy") document.body.dataset.busy = ""; else delete document.body.dataset.busy;     // the eye in the mark breathes while a check runs
 }
 function healthItems() {
   const items = [];
@@ -411,7 +412,12 @@ function notifySignals(T) {
     log("signal", "SIGNAL " + c.symbol + " " + cd.setup + " " + cd.side, { entry: cd.entry, stop: cd.stop, target: cd.target1, expires: cd.expires, demo: S.todayDemo });
     if (S.todayDemo) continue;
     const title = (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
-    const body = "Signal: " + (cd.side === "short" ? "a market sell" : "a market buy") + " before " + clock(cd.expires) + ". Open Trinetra for the size, stop and target.";
+    const plan = S.signalPlans[c.symbol] || {}, sell = cd.side === "short";
+    const e = plan.entry || cd.entry, st = plan.stop || cd.stop, t1 = ((plan.targets || [])[0] || {}).price || cd.target1;
+    const pct = (a, b) => num(Math.abs(a - b) / a * 100, 2) + "%";
+    const body = e && st && t1
+      ? "On " + venueName() + ": market " + (sell ? "sell " : "buy ") + (plan.qty ? num(plan.qty, 4) + " " : "") + coinOf(c.symbol) + " before " + clock(cd.expires) + ". Then a stop " + pct(e, st) + (sell ? " above" : " below") + " and a target " + pct(e, t1) + (sell ? " below" : " above") + " your fill. Open Trinetra for the details."
+      : "Signal: " + (sell ? "a market sell" : "a market buy") + " before " + clock(cd.expires) + ". Open Trinetra for the size, stop and target.";
     // a signal is the one alert that must not be missed: the phone/computer notification (when allowed), a sound,
     // a vibration, a banner that stays until tapped, and the tab title flashing until Trinetra is looked at
     showNote(title, body, key);
@@ -577,13 +583,14 @@ function mergeDevices(remote) {
   return out;
 }
 function devicesList() {
-  const ds = Object.entries(SYNC.devices || {}).sort((a, b) => (b[1].seen || 0) - (a[1].seen || 0));
+  const ds = Object.entries(SYNC.devices || {}).sort((a, b) => (b[0] === deviceId()) - (a[0] === deviceId()) || (b[1].seen || 0) - (a[1].seen || 0));
   if (!ds.length) return null;
-  return el("div", {}, el("h3", { class: "h3" }, "Devices on this sync (" + ds.length + ")"),
-    el("ul", { class: "devices" }, ds.map(([id, d]) => el("li", {},
+  return el("div", { class: "form" }, el("h3", { class: "h3" }, "Devices on this sync (" + ds.length + ")"),
+    el("ul", { class: "devices" }, ds.map(([id, d]) => el("li", { class: id === deviceId() ? "me" : null },
       el("b", {}, d.kind + (id === deviceId() ? " (this device)" : "")),
-      el("span", { class: "small muted" }, "Synced " + ago(d.seen) + (d.alerts ? ". Alerts on." : ". Alerts off.") + (d.build && d.build !== BUILD ? " Older version: reload it." : ""))))),
-    el("p", { class: "small muted" }, "Settings, your record, the news check and the Claude connector are shared by all of them" + (CL.link ? " (the connector is set up)." : ".")));
+      el("span", { class: "small muted" }, (id === deviceId() ? "Synced " + ago(SYNC.at || d.seen) : "Last synced " + ago(d.seen)) + (d.alerts ? ". Alerts on." : ". Alerts off.")
+        + (d.build && d.build !== BUILD ? " On an older version: open it and tap Reload." : ""))))),
+    el("p", { class: "small muted" }, "All of them share your settings, record and news check" + (CL.link ? ", and the Claude connector, which is set up." : ". Set up the Claude connector once and every device has it.")));
 }
 function syncSoon() { if (!SYNC.code) return; clearTimeout(SYNC.timer); SYNC.timer = setTimeout(() => syncNow("change"), 4000); }
 function setSyncCode(code) {
@@ -603,6 +610,91 @@ async function linkWithCode(raw, fromLink) {
   if ($("sheet").open) $("sheet").close();
   return true;
 }
+// ---- linking by a short code, for a device that cannot open a sync link itself: an iPhone or iPad Home Screen app keeps
+// its own storage, apart from Safari, so a QR code scanned with the camera links Safari, not the app. The device that
+// already syncs makes an 8-character code (10 minutes, one use) and leaves its sync code on this site encrypted with a key
+// made from the short code; the new device types the code and opens it. Neither code reaches the server.
+const PAIR_LEN = 8;
+function newPairCode() {
+  const b = crypto.getRandomValues(new Uint8Array(5));        // 40 random bits, 8 characters
+  let bits = "", out = "";
+  for (const x of b) bits += x.toString(2).padStart(8, "0");
+  for (let i = 0; i < 40; i += 5) out += B32[parseInt(bits.slice(i, i + 5), 2)];
+  return out;
+}
+const showPair = (c) => c.slice(0, 4) + "-" + c.slice(4);
+async function pairKeys(code) {
+  const enc = new TextEncoder();
+  const base = await crypto.subtle.importKey("raw", enc.encode(code), "PBKDF2", false, ["deriveBits"]);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: enc.encode("trinetra-pair-v1"), iterations: 210000 }, base, 512));
+  const id = [...bits.slice(0, 32)].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const key = await crypto.subtle.importKey("raw", bits.slice(32), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return { id, key };
+}
+async function pairApi(method, query, body) {
+  const r = await fetch("api/pair" + (query || ""), { method, cache: "no-store", headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (!(r.headers.get("content-type") || "").includes("json")) throw new Error("linking by code isn't on this site yet: it needs the GitHub deploy");
+  return { status: r.status, body: await r.json() };
+}
+async function makePairCode() {
+  for (let i = 0; i < 3; i++) {
+    const code = newPairCode(), { id, key } = await pairKeys(code);
+    const r = await pairApi("POST", "", { id, blob: await seal(key, JSON.stringify({ v: 1, sync: SYNC.code })) });
+    if (r.status === 200) { log("sync", "link code made"); return { code, expires: r.body.expires }; }
+    if (r.status !== 409) throw new Error(r.body.error || "the site answered " + r.status);
+  }
+  throw new Error("no free code: try again");
+}
+async function linkWithPair(code) {
+  let r, o;
+  try {
+    const { id, key } = await pairKeys(code);
+    r = await pairApi("GET", "?id=" + id);
+    if (r.status !== 200) { toast(cap(r.body.error || "that code didn't work") + "."); log("sync", "link code refused: " + r.status); return false; }
+    o = JSON.parse(await open_(key, r.body.blob));
+  } catch (e) { toast("Not linked: " + pyErr(e)); return false; }
+  if (!o || normCode(o.sync).length !== 26) { toast("That code didn't open: make a new one on the other device."); return false; }
+  return linkWithCode(o.sync);
+}
+async function linkWithAny(raw) {
+  const c = normCode(raw);
+  if (c.length === PAIR_LEN) return linkWithPair(c);
+  if (c.length === 26) return linkWithCode(c);
+  toast("Type the 8-character code your other device shows (there: Settings, Sync, Link a device).");
+  return false;
+}
+function pairLeft(exp) {
+  const s = Math.max(0, Math.round((exp - Date.now()) / 1000));
+  return s ? "Works once. Expires in " + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "." : "Expired. Make a new code.";
+}
+function codeInput() {
+  return el("input", { class: "input code-in", placeholder: "XXXX-XXXX", autocomplete: "off", autocapitalize: "characters", spellcheck: "false", maxlength: "40",
+    "aria-label": "Code from your other device", oninput: (e) => { const v = normCode(e.target.value); if (v.length <= PAIR_LEN) e.target.value = v.length > 4 ? v.slice(0, 4) + "-" + v.slice(4) : v; } });
+}
+function pairSheet() {
+  openSheet(() => {
+    const box = el("div", { class: "pair" });
+    const make = async () => {
+      box.replaceChildren(el("p", { class: "muted pair-left" }, "Making a code…"));
+      try {
+        const p = await makePairCode();
+        box.replaceChildren(el("p", { class: "pair-code", "aria-label": "Code " + p.code.split("").join(" ") }, showPair(p.code)),
+          el("p", { class: "small muted pair-left", "data-pair": String(p.expires) }, pairLeft(p.expires)),
+          el("div", { class: "row" }, el("button", { class: "btn quiet", type: "button", onclick: make }, ic("refresh"), "Make a new code")));
+      } catch (e) {
+        box.replaceChildren(el("p", { class: "bad-text" }, "Couldn't make a code: " + pyErr(e)),
+          el("button", { class: "btn", type: "button", onclick: make }, "Try again"));
+      }
+    };
+    make();
+    return [el("h2", {}, "Link a device"),
+      el("p", {}, "On the new device, open Trinetra (on iPhone or iPad, from its Home Screen icon) and type this code: on the setup screen, or in Settings, Sync."),
+      box,
+      el("details", { class: "more" }, el("summary", {}, "Or scan a QR code instead", ic("chev")), el("div", {},
+        el("p", { class: "small" }, "The camera opens Trinetra in the phone's browser and links that. An iPhone Home Screen app keeps its own data, so link the app with the code above."),
+        qrImage(syncLink(SYNC.code))))];
+  });
+}
 function qrImage(text) {
   if (typeof qrcode !== "function") return null;
   const q = qrcode(0, "M"); q.addData(text); q.make();
@@ -615,31 +707,41 @@ function syncStateText() {
   if (SYNC.error) return "Last sync failed: " + SYNC.error;
   return SYNC.at ? "Synced " + ago(SYNC.at) + "." : "Not synced yet.";
 }
+const IOS = /iphone|ipad/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const STANDALONE = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+function iosNote() {
+  if (!IOS || STANDALONE) return null;
+  return el("p", { class: "small status-line wait" }, "On iPhone and iPad, use Trinetra from the Home Screen: tap Share, then Add to Home Screen. The Home Screen app keeps its own data, apart from Safari, so open it and link it with a code.");
+}
 function syncPanel() {
   const state = el("p", { id: "sync-state", class: "small" + (SYNC.error ? " bad-text" : "") }, syncStateText());
   if (!SYNC.code) {
-    const inp = el("input", { class: "input mono", placeholder: "XXXX-XXXX-XXXX-…", autocomplete: "off", "aria-label": "Sync code" });
-    return el("div", { class: "panel", id: "sync" }, el("h2", {}, "Use Trinetra on all your devices"),
-      el("p", { class: "small" }, "Turn on sync here, then scan the QR code with your other device's camera. Settings and the record stay the same everywhere. Your data is encrypted on the device before it is stored."),
+    const inp = codeInput();
+    return el("div", { id: "sync" },
+      el("p", { class: "small" }, "Settings, your record, the news check and the Claude connector stay the same on every device. Everything is encrypted on the device before it's stored."),
       el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", disabled: demo() || null, onclick: async (ev) => withSpin(ev.currentTarget, async () => {
         setSyncCode(newSyncCode()); await syncNow("turned on");
         if (SYNC.unavailable) { toast("Sync needs this site to be deployed from GitHub. Turned off again."); setSyncCode(""); }
-        else log("sync", "sync turned on");
+        else { log("sync", "sync turned on"); toast("Sync is on. Tap Link a device to add your phone or laptop."); }
         renderSettings();
       }) }, "Turn on sync")),
-      el("p", { class: "small muted" }, "Already on? Paste the code from your other device:"),
-      el("div", { class: "row" }, inp, el("button", { class: "btn", type: "button", onclick: async (ev) => withSpin(ev.currentTarget, async () => { if (await linkWithCode(inp.value)) renderSettings(); }) }, "Link")),
+      el("h3", { class: "h3" }, "Already use Trinetra on another device?"),
+      el("p", { class: "small muted" }, "On that device open Settings, Sync, and tap Link a device. Type the code it shows:"),
+      el("div", { class: "row" }, inp, el("button", { class: "btn", type: "button", onclick: async (ev) => withSpin(ev.currentTarget, async () => { if (await linkWithAny(inp.value)) renderSettings(); }) }, "Link this device")),
+      iosNote(),
       demo() ? el("p", { class: "small muted" }, "Turn demo data off to use sync.") : null, state);
   }
   const link = syncLink(SYNC.code);
-  return el("div", { class: "panel", id: "sync" }, el("h2", {}, "Sync is on"), state, devicesList(),
-    el("div", { class: "syncbox" }, qrImage(link),
-      el("div", {}, el("p", { class: "small" }, "To add a device, scan this with its camera, or open the link on it."),
-        el("p", { class: "code mono" }, showCode(SYNC.code)),
-        el("div", { class: "row" },
-          el("button", { class: "btn", type: "button", onclick: (ev) => copyText(link, "Sync link", ev.currentTarget, "Link copied. Open it on your other device.") }, ic("copy"), "Copy link"),
-          el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, () => syncNow("by hand")) }, ic("refresh"), "Sync now")))),
-    el("p", { class: "small muted" }, "Keep this code like a password: anyone with it can read your Trinetra data, and it's the only way back to it if you lose every device. Write it down somewhere safe."),
+  return el("div", { id: "sync" }, state,
+    el("div", { class: "row" },
+      el("button", { class: "btn solid", type: "button", onclick: pairSheet }, "Link a device"),
+      el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, () => syncNow("by hand")) }, ic("refresh"), "Sync now")),
+    devicesList(), iosNote(),
+    el("details", { class: "more" }, el("summary", {}, "Your sync code", ic("chev")), el("div", { class: "form" },
+      el("div", { class: "syncbox" }, qrImage(link),
+        el("div", { class: "form" }, el("p", { class: "code mono" }, showCode(SYNC.code)),
+          el("p", { class: "small muted" }, "Keep it like a password: anyone with it can read your Trinetra data, and it's the way back to your data if you lose every device. Write it down somewhere safe."),
+          el("div", { class: "row" }, el("button", { class: "btn", type: "button", onclick: (ev) => copyText(link, "Sync link", ev.currentTarget, "Link copied. Open it on your other device.") }, ic("copy"), "Copy link")))))),
     el("details", { class: "more" }, el("summary", {}, "Stop syncing", ic("chev")), el("div", {},
       el("div", { class: "row" },
         el("button", { class: "btn", type: "button", onclick: () => { setSyncCode(""); log("sync", "sync turned off on this device"); toast("Sync is off on this device. Your data here stays."); renderSettings(); } }, "Turn off on this device"),
@@ -779,7 +881,7 @@ async function testConnector() {
 }
 function claudePanel() {
   if (!CL.link) {
-    return el("div", { class: "panel", id: "claude" }, el("h2", {}, "Connect Claude"),
+    return el("div", { id: "claude" },
       el("p", { class: "small" }, "Claude reads Trinetra's live data itself and saves its research and the agent desk's calls back here: no copying or pasting. It uses your normal Claude login; Trinetra never sees your Claude account. Your scheduled research tasks use it too."),
       el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", disabled: demo() || null, onclick: (ev) => withSpin(ev.currentTarget, async () => {
         await call("claude_link_set", newToken());
@@ -792,7 +894,7 @@ function claudePanel() {
       demo() ? el("p", { class: "small muted" }, "Turn demo data off first.") : null);
   }
   const url = location.origin + "/api/mcp/" + CL.link.token;
-  return el("div", { class: "panel", id: "claude" }, el("h2", {}, "Claude connector"),
+  return el("div", { id: "claude" },
     el("p", { id: "claude-state", class: "small" + (CL.error ? " bad-text" : "") }, claudeStateText()),
     el("ol", { class: "steps-cl" },
       el("li", {}, "In Claude, open ", el("a", { href: "https://claude.ai/customize/connectors", target: "_blank", rel: "noopener noreferrer" }, "Settings, Connectors"), " and choose ", el("b", {}, "Add custom connector"), "."),
@@ -833,9 +935,17 @@ function trackMoves(T) {
 function watchAlerts() {
   if (!engineReady || demo()) return;
   const now = Date.now(), fn = fedNight();
+  // every high-impact US release: one alert an hour before, with what to do (Fed nights have their own steps below)
+  const soon = nextReleases().filter((r) => r.kind !== "FOMC" && r.t - now <= HOUR && now < r.t);
+  for (const t of [...new Set(soon.map((r) => r.t))]) {
+    const names = soon.filter((r) => r.t === t).map(kindName).join(" and ");
+    notify(names + " at " + clock(t), "No new trades until " + clock(t + 30 * MIN) + ". Nothing else to do: the first minutes often fake. A trade you're in keeps its stop.", "pre-" + t);
+  }
   if (fn) {
     const t = fn.fed.t;
-    if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Stay flat. Trinetra checks SOL at " + clock(fn.read) + ".", "fed5-" + t);
+    if (now >= t - 30 * MIN && now < t - 5 * MIN) notify("Fed decision at " + clock(t), "Keep Trinetra open from now, alerts on. Nothing to do until it checks SOL at " + clock(fn.read) + ".", "fed30-" + t);
+    if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Do nothing now. Trinetra checks SOL at " + clock(fn.read) + " and alerts you.", "fed5-" + t);
+    if (now >= fn.read - 5 * MIN && now < fn.read) notify("SOL check in 5 minutes", "Open " + venueName() + " on the SOL perpetual now, so you can order quickly if Trinetra signals.", "fedready-" + t);
     // The read-time outcome, only from a check that started at or after the read time, and only what it really found:
     // "no signal" needs SOL to have been checked; a SOL check that failed or was paused says so instead.
     if ((S.todayFrom || 0) >= fn.read && now < fn.read + 30 * 60000 && S.today && !(S.today.signals || []).length) {
@@ -844,13 +954,13 @@ function watchAlerts() {
       if (sol && sol.error && last) notify("Trinetra couldn't check SOL tonight", "It couldn't get SOL's prices in time, so the Fed rule was not checked. This is not a 'no signal' answer.", "fedsolfail-" + t);
       else if (sol && sol.error) notify("Trinetra couldn't check SOL yet", "It's trying again every 90 seconds until " + clock(fn.read + 14 * 60000) + ". Keep Trinetra open.", "fedsolretry-" + t);
       else if (sol && sol.blocked_signal) notify("The SOL rule fired, but it's paused", "The news check paused new trades. Open Trinetra for the reason; nothing to place.", "fedblocked-" + t);
-      else if (sol) notify("No SOL signal tonight", "The Fed rule didn't fire. Nothing to do.", "fednone-" + t);
+      else if (sol) notify("No SOL signal tonight", "The Fed rule didn't fire. Nothing to do: you're done for the night.", "fednone-" + t);
     }
     if (now >= fn.read && now < fn.read + 15 * 60000 && S.todayError) notify("Trinetra can't check the Fed rule", "It couldn't reach the market: check your connection and keep Trinetra open.", "fedfail-" + t);
   }
   for (const r of S.openTrades || []) {
     const cb = r.close_by || (r.ts + (r.horizon_hours || 24) * 3600000);
-    if (now >= cb - 15 * 60000 && now < cb) notify("Close your " + coinOf(r.symbol) + " trade by " + clock(cb), "The tested plan never holds past this time.", "close-" + r.id);
+    if (now >= cb - 15 * 60000 && now < cb) notify("Close your " + coinOf(r.symbol) + " trade by " + clock(cb), "On " + venueName() + ", close the " + coinOf(r.symbol) + " position at market, and cancel its stop and target orders. The tested plan never holds past this time.", "close-" + r.id);
     const px = (S.lastPrices || {})[coinOf(r.symbol)];
     const t1 = ((r.targets || [])[0] || {}).price || (r.targets || [])[0];
     if (px && r.stop && t1 && px.t > now - 20 * 60000) {
@@ -924,6 +1034,11 @@ function showNow(v) {
   if (v === "settings") renderSettings();
   window.scrollTo({ top: 0 });
 }
+function rerender() {                                       // the current screen again, in place (no scroll to the top)
+  const v = view();
+  if (!engineReady) return;
+  if (v === "home") renderHome(); else if (v === "coins") renderCoins(); else if (v === "record") renderRecord(); else if (v === "settings") renderSettings();
+}
 window.addEventListener("hashchange", () => { const l = linkFromHash(); if (l && engineReady) return handleLink(l.kind, l.payload); show(); });
 
 // ================================================================ Today (home)
@@ -937,13 +1052,25 @@ function fedNight() {
   const read = fed.t + 61 * 60000;
   return { fed, read, live: Date.now() >= fed.t && Date.now() < read + 15 * 60000 };
 }
-function verdictBlock() {
-  const T = S.today;
-  const wrap = el("div", { class: "verdict swap" });
+// The answer arrives with a short animation only when it changes, not on every 15-minute re-check.
+function arriveOnce(node, key) {
+  if (S.answerKey !== key) { S.answerKey = key; node.classList.add("arrive"); }
+  return node;
+}
+function checkedLine() {
   const when = el("div", { class: "when" });
-  if (S.todayAt) add(when, [el("span", { "data-ago": String(S.todayAt) }, "Checked " + ago(S.todayAt)), " "]);
+  if (S.todayAt) add(when, [el("span", { "data-ago": String(S.todayAt) }, "Checked " + ago(S.todayAt))]);
   add(when, [el("button", { class: "btn quiet icon-btn" + (S.running ? " spin" : ""), type: "button", "aria-label": "Check again now", title: "Check again now",
     disabled: S.running || null, onclick: () => runToday("by hand") }, ic("refresh"))]);
+  return when;
+}
+function verdictBlock() {
+  const v = verdictInner();
+  return arriveOnce(v, (v.querySelector("h1") || {}).textContent || "");
+}
+function verdictInner() {
+  const T = S.today;
+  const wrap = el("div", { class: "verdict" });
   const fn = fedNight();
   if (!T && S.running) {
     wrap.dataset.tone = "checking";
@@ -952,7 +1079,7 @@ function verdictBlock() {
   }
   if (!T && !S.todayError && needsSetup()) {
     wrap.dataset.tone = "checking";
-    add(wrap, [el("h1", {}, "Set up to start."), el("p", { class: "why" }, "Tell Trinetra your capital and risk once. Then it checks the market by itself."),
+    add(wrap, [el("h1", {}, "Set up to start."), el("p", { class: "why" }, "Tell Trinetra your capital and risk once, or link this device to one you already use. Then it checks the market by itself."),
       el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: onboarding }, "Set up Trinetra"))]);
     return wrap;
   }
@@ -968,29 +1095,29 @@ function verdictBlock() {
     wrap.dataset.tone = "bad";
     add(wrap, [el("h1", {}, "Can't reach the market."), el("p", { class: "why" }, "No price data reached this browser, so nothing was checked. This is not a 'no signal' answer."),
       el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: () => runToday("retry") }, "Try again"),
-        el("a", { class: "btn", href: "#settings/health" }, "Connection test")), when]);
+        el("a", { class: "btn", href: "#settings/health" }, "Connection test")), checkedLine()]);
     return wrap;
   }
   wrap.dataset.tone = "calm";
-  let h = "No trade today.", why = "None of your coins has a tested edge right now. That is the normal answer: the engine only signals when a setup's own history beat chance after costs and every rule passes.";
+  let h = "No trade today.", why = "None of your coins has a tested edge right now. That's the usual answer: Trinetra signals only when a setup's own history beat chance after costs and every rule passes.";
   if (fn && fn.live && Date.now() < fn.read) {
     h = "Wait for " + clock(fn.read) + ".";
-    why = "The Fed decided at " + clock(fn.fed.t) + ". The SOL rule reads the first hour, so the app checks again at " + clock(fn.read) + " by itself. Keep it open.";
+    why = "The Fed decided at " + clock(fn.fed.t) + ". The SOL rule reads the first hour, so Trinetra checks again at " + clock(fn.read) + " by itself. Keep it open.";
   } else if (fn && fn.fed.t - Date.now() < 48 * 3600000 && fn.fed.t > Date.now()) {
-    why = "Nothing has an edge right now. The Fed decision is " + inWords(fn.fed.t).replace(/^/, "in ") + ": that is the one night the tested rule can fire.";
+    why = "Nothing has an edge right now. The Fed decision is in " + inWords(fn.fed.t) + ": the one night the tested rule can fire.";
   }
   const blocked = coins.find((c) => c.blocked_signal);
   if (blocked) {
     // a tested rule fired and only the rules check stopped it: say exactly that, never "no tested edge"
     const bs = blocked.blocked_signal, k = coinOf(blocked.symbol);
     const byNews = (bs.by || []).some((b) => /news check/i.test(b));
-    wrap.dataset.tone = "warn";
+    wrap.dataset.tone = "care";
     h = k + " rule paused.";
     why = "The tested " + k + " rule fired (" + (bs.side === "short" ? "sell" : "buy") + "), but " + (byNews ? "the news check paused new trades" : "a rule blocked it: " + plain((bs.by || []).join("; "))) +
       ". No trade: the news can pause or shrink a trade, never create one. The blocked trade is recorded with what it would have done.";
   }
   if (failed.length) why += " Not checked: " + failed.map((c) => coinOf(c.symbol)).join(", ") + ".";
-  add(wrap, [el("h1", {}, h), el("p", { class: "why" }, why), when]);
+  add(wrap, [el("h1", {}, h), el("p", { class: "why" }, why), checkedLine()]);
   return wrap;
 }
 function ticketBlock(c) {
@@ -1002,15 +1129,16 @@ function ticketBlock(c) {
   const rm = Number(plan.risk_multiplier || 1), nm = Number(plan.news_multiplier || 1);
   const sizeTxt = rm < 1 && nm < 1 ? " Sized at a quarter of your normal risk: half while your record is new, and half again for the news check."
     : rm < 1 ? " Sized at half your normal risk while your record is new." : nm < 1 ? " Sized at half your normal risk because of the news check." : "";
-  const t = el("div", { class: "ticket swap" },
+  const t = el("div", { class: "ticket" },
     el("h1", {}, (sell ? "Sell " : "Buy ") + coin + " now."),
     cd.expires ? el("p", { class: "deadline" }, (isEvent ? "A market order before " : "Order valid until "), el("b", {}, clock(cd.expires)), ". ",
       el("span", { "data-left": String(cd.expires) }, inWords(cd.expires) + " left.")) : null,
     el("ol", { class: "steps" },
-      el("li", {}, el("span", {}, (sell ? "Sell " : "Buy "), el("b", {}, num(plan.qty, 4) + " " + coin), " at market, about " + num(e) +
+      el("li", {}, el("span", {}, "On " + venueName() + ", " + coin + " perpetual: " + (sell ? "sell " : "buy "), el("b", {}, num(plan.qty, 4) + " " + coin), " at market, about " + num(e) +
         (plan.notional ? " (" + num(plan.notional, 0) + " USDT at " + plan.leverage + "x, isolated)" : "") + ".")),
       el("li", {}, el("span", {}, "Set the stop ", el("b", {}, num(stopPct, 2) + "% " + (sell ? "above" : "below")), " your fill. At " + num(e) + " that is " + num(st) + ".")),
-      el("li", {}, el("span", {}, "Set the target ", el("b", {}, num(tgtPct, 2) + "% " + (sell ? "below" : "above")), " your fill. At " + num(e) + " that is " + num(t1) + "."))),
+      el("li", {}, el("span", {}, "Set the target ", el("b", {}, num(tgtPct, 2) + "% " + (sell ? "below" : "above")), " your fill. At " + num(e) + " that is " + num(t1) + ".")),
+      el("li", {}, el("span", {}, "Tap ", el("b", {}, "I placed it"), " below and type your fill price. Then leave it: the stop and target do the work."))),
     el("p", { class: "fine" }, "If stopped you lose about " + num(plan.max_loss_at_stop, 2) + " USDT" + (plan.inr ? " (" + plan.inr.currency + " " + num(plan.inr.max_loss, 0) + ")" : "") +
       "." + sizeTxt + (plan.close_by ? " Close it by " + dayTime(plan.close_by) + " at the latest." : "") + (c.hold_note ? " The hold is shorter than usual because of a release the next day." : "")),
     S.todayDemo ? el("p", { class: "fine" }, el("b", {}, "Demo data: this is not a real signal.")) :
@@ -1018,28 +1146,105 @@ function ticketBlock(c) {
         el("button", { class: "btn solid", type: "button", onclick: () => logTrade(c, plan) }, "I placed it"),
         el("button", { class: "btn", type: "button", onclick: () => logPaper(c) }, "Track on paper"),
         el("button", { class: "btn", type: "button", onclick: (ev) => askAgents(c, ev.currentTarget) }, "Second opinion")));
-  return t;
+  return arriveOnce(t, "signal " + c.symbol + " " + cd.expires);
 }
-function nextNewsBlock() {
-  const list = nextReleases();
-  const nx = list[0];
-  if (!nx) return el("div", { class: "next" }, el("p", { class: "kind" }, "Next major news"), el("p", {}, "No release in the bundled schedule."));
-  const fed = list.find((r) => r.kind === "FOMC");
-  const isFed = nx.kind === "FOMC";
-  const box = el("div", { class: "next" + (isFed ? " fed" : "") },
-    el("p", { class: "kind" }, nx.t <= Date.now() ? "Major news, now" : "Next major news"),
-    el("p", { class: "name" }, kindName(nx)),
-    el("p", { class: "date" }, dayTime(nx.t)),
-    countdown(nx.t),
-    el("p", { class: "plan" }, (KIND[nx.kind] || {}).plan || "The engine keeps you flat around it."),
-    !isFed && fed ? el("p", { class: "small" }, "Next Fed night: ", el("b", {}, dayTime(fed.t)), ", in " + inWords(fed.t) + ". The SOL rule can fire about an hour after it.") : null,
-    el("div", { class: "row" },
-      el("button", { class: "btn", type: "button", onclick: async () => { download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar"); log("app", "fed nights calendar downloaded"); } }, ic("cal"), "Fed nights to calendar"),
-      alertButton()));
-  return box;
+function planFor(r) {
+  if (r.kind === "FOMC") {
+    const read = r.t + 61 * 60000;
+    return "The one night the tested rule can fire (SOL). Trinetra checks SOL by itself at " + clock(read) + "; a signal gives you about 15 minutes to place a market order. Keep Trinetra open, or keep the calendar reminder.";
+  }
+  return (KIND[r.kind] || {}).plan || "The engine keeps you flat around it.";
+}
+// ---- news days in steps: what to do, at what time, and how. The times come from the release itself and the tested
+// rule (Fed: the rule reads the first hour, a signal must be placed within 15 minutes, a trade closes after 24 hours or
+// an hour before the next big US release, whichever is first; other releases: flat from an hour before to 30 minutes after).
+const MIN = 60000, HOUR = 3600000;
+const venueName = () => String(((S.settings || {}).values || {}).venue || "CoinSwitch PRO");
+function fedTimes(t) {
+  const read = t + 61 * MIN, by = t + 75 * MIN;
+  const clash = nextReleases().filter((x) => x.kind !== "FOMC" && x.t > read + HOUR && x.t <= t + 24 * HOUR).sort((a, b) => a.t - b.t)[0];
+  return { read, by, clash, close: clash ? clash.t - HOUR : t + 24 * HOUR };
+}
+function newsDaySteps(r) {
+  const t = r.t;
+  if (r.kind === "FOMC") {
+    const { read, by, clash, close } = fedTimes(t);
+    return [
+      [t - 30 * MIN, "Open Trinetra and leave it open", "On the phone or laptop you'll use, plugged in, with alerts on." + (IOS ? " On iPhone, keep the screen on tonight (Settings, Display & Brightness, Auto-Lock: Never) and Trinetra in front." : "") +
+        " No new trades on any coin from " + clock(t - HOUR) + " to " + clock(t + 30 * MIN) + "."],
+      [t, "The Fed decides: do nothing", "The first hour often swings both ways. The tested rule waits for it to finish."],
+      [read - 5 * MIN, "Get ready", "Open " + venueName() + " on the SOL perpetual (SOLUSDT), so you can place an order in a minute if needed."],
+      [read, "Trinetra checks SOL by itself", "Its alert comes within a minute or two. “No SOL signal tonight” means nothing to do: you're done for the night."],
+      [by, "If it says Buy or Sell SOL: order before " + clock(by), "A market order for the size on the ticket. Then set the stop and the target at the percentages it shows, from your fill price. Tap “I placed it” and type your fill. After " + clock(by) + ", don't chase it."],
+      [close, "Close any SOL trade by " + clock(close), (clash ? "At market, an hour before " + nextReleases().filter((x) => x.t === clash.t).map(kindName).join(" and ") + " at " + clock(clash.t) + "." : "At market, 24 hours after the decision, as tested.") + " Trinetra reminds you 15 minutes before; the stop and target stay on the exchange until then."],
+    ];
+  }
+  return [
+    [t - HOUR, "No new trades from " + clock(t - HOUR), "Trinetra blocks any trade that would start now or still be open at the release. A trade you're already in keeps its stop on the exchange."],
+    [t, kindName(r) + " comes out: do nothing", "The first minutes move 2 to 5 times more than usual and often fake: about 4 times in 5, the high or low of the hour before is taken out within 30 minutes."],
+    [t + 30 * MIN, "Back to normal from " + clock(t + 30 * MIN), "Trinetra goes back to its usual checks. No rule is proven for this release, so it gives no signal from it."],
+  ];
+}
+function stepsList(r) {
+  const steps = newsDaySteps(r), now = Date.now();
+  const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+  return el("ol", { class: "daysteps" }, steps.map(([t, title, how], i) => {
+    const next = i === steps.findIndex(([x]) => x > now), done = t + 10 * MIN < now;
+    return el("li", { class: (done ? "done" : "") + (next ? " now" : "") },
+      el("span", { class: "at" }, sameDay(t, r.t) ? null : el("small", {}, dtf({ weekday: "short" }).format(new Date(t)) + " "), clock(t)),
+      el("div", {}, el("b", {}, title), el("span", {}, how)));
+  }));
+}
+function stepsIcs(r) {
+  const now = Date.now(), name = kindName(r);
+  const L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Trinetra//news day steps//EN"];
+  newsDaySteps(r).forEach(([t, title, how], i) => {
+    if (t < now) return;
+    L.push("BEGIN:VEVENT", "UID:trinetra-" + r.kind + "-" + r.t + "-" + i + "@trinetra", "DTSTAMP:" + icsTime(now), "DTSTART:" + icsTime(t), "DTEND:" + icsTime(t + 10 * MIN),
+      "SUMMARY:" + icsEsc("Trinetra, " + name + ": " + title), "DESCRIPTION:" + icsEsc(how),
+      "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + icsEsc(title), "TRIGGER:-PT0M", "END:VALARM", "END:VEVENT");
+  });
+  L.push("END:VCALENDAR");
+  return L.map(icsFold).join("\r\n") + "\r\n";
+}
+const icsEsc = (s) => String(s).replace(/[\\,;]/g, (c) => "\\" + c).replace(/\n/g, "\\n");
+function icsFold(line) {                                  // the calendar standard: lines of at most 75 bytes, continued with a space
+  const out = [];
+  let cur = "", n = 0;
+  for (const ch of line) {
+    const cp = ch.codePointAt(0), b = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (n + b > (out.length ? 74 : 75)) { out.push(cur); cur = ""; n = 0; }
+    cur += ch; n += b;
+  }
+  out.push(cur);
+  return out.map((x, k) => (k ? " " + x : x)).join("\r\n");
+}
+function stepsCalButton(r, label) {
+  return el("button", { class: "btn", type: "button", onclick: () => {
+    download("trinetra-" + String(r.kind).toLowerCase() + "-" + new Date(r.t).toISOString().slice(0, 10) + ".ics", stepsIcs(r), "text/calendar");
+    log("app", "news-day steps to calendar: " + r.kind);
+    toast("Open the file to add the steps to your calendar: each one reminds you at its time, even with Trinetra closed.");
+  } }, ic("cal"), label || "Steps to my calendar");
+}
+function nextBlock() {
+  const list = nextReleases(), nx = list[0];
+  if (!nx) return el("section", { class: "next" }, el("p", { class: "kicker" }, "Next major news"), el("p", {}, "No release in the bundled schedule."));
+  const isFed = nx.kind === "FOMC", fed = list.find((r) => r.kind === "FOMC");
+  const soon = nx.t - Date.now() < 36 * HOUR;
+  return el("section", { class: "next" + (isFed ? " fed" : "") },
+    el("div", { class: "next-head" },
+      el("div", {}, el("p", { class: "kicker" }, nx.t <= Date.now() ? "Major news, now" : "Next major news"),
+        el("p", { class: "name" }, kindName(nx)), el("p", { class: "date" }, dayTime(nx.t))),
+      countdown(nx.t)),
+    soon ? [el("h3", { class: "h3" }, "What to do, step by step"), stepsList(nx)]
+      : [el("p", { class: "plan" }, planFor(nx)),
+        el("details", { class: "more" }, el("summary", {}, "What to do on the day, step by step", ic("chev")), el("div", {}, stepsList(nx)))],
+    !isFed && fed ? el("p", { class: "small muted" }, "Next Fed night: ", el("b", {}, dayTime(fed.t)), ". The SOL rule can fire about an hour after it.") : null,
+    el("div", { class: "row" }, alertButton(), stepsCalButton(nx),
+      el("button", { class: "btn quiet", type: "button", onclick: async () => { download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar"); log("app", "fed nights calendar downloaded"); } }, "Fed nights to calendar")));
 }
 function countdown(t) {
-  const c = el("div", { class: "count", "data-count": String(t), "aria-label": "Time left" });
+  const c = el("div", { class: "count", "data-count": String(t), role: "timer", "aria-label": "Time left" });
   fillCountdown(c);
   return c;
 }
@@ -1049,20 +1254,21 @@ function fillCountdown(c) {
   const before = [...c.querySelectorAll("b")].map((b) => b.textContent);
   c.replaceChildren(...cells.map(([n, l], i) => el("div", {}, el("b", { class: before.length && before[i] !== String(n) ? "tick" : null }, String(n)), l ? el("span", {}, l) : null)));
 }
+function alertsOn() { return store("desk-alerts") === "1" && "Notification" in window && Notification.permission === "granted"; }
 function alertButton() {
-  const on = store("desk-alerts") === "1" && "Notification" in window && Notification.permission === "granted";
-  return el("button", { class: "btn", type: "button", "aria-pressed": on ? "true" : "false", onclick: async (ev) => {
-    if (!("Notification" in window)) { toast("This browser cannot show alerts. Use the calendar reminders instead."); return; }
-    if (on) { store("desk-alerts", "0"); toast("Alerts off."); renderHome(); return; }
+  const on = alertsOn();
+  return el("button", { class: "btn", type: "button", "aria-pressed": on ? "true" : "false", onclick: async () => {
+    if (!("Notification" in window)) { toast(IOS && !STANDALONE ? "On iPhone, alerts work in the Home Screen app: Share, Add to Home Screen." : "This browser cannot show alerts. Use the calendar reminders instead."); return; }
+    if (on) { store("desk-alerts", "0"); toast("Alerts off."); rerender(); return; }
     const p = await Notification.requestPermission();
-    if (p === "granted") { store("desk-alerts", "1"); toast("Alerts on while Trinetra is open. Phones may pause it, so keep the calendar reminder too."); log("app", "alerts turned on"); }
+    if (p === "granted") { store("desk-alerts", "1"); toast("Alerts on while Trinetra is open. Phones may pause it, so keep the calendar reminder too."); log("app", "alerts turned on"); syncSoon(); }
     else toast("Alerts were not allowed. You can allow them in the browser's site settings.");
-    renderHome();
+    rerender();
   } }, ic("bell"), on ? "Alerts on" : "Alert me here");
 }
-function horizonBlock() {
-  // The next five weeks as a calendar: one cell per day, so releases never overlap however close together they are.
-  const now = new Date(), evs = nextReleases();
+function calendarGrid(evs) {
+  // The next five weeks, one cell per day, so releases never overlap however close together they are.
+  const now = new Date();
   const dayKey = (d) => d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   start.setDate(start.getDate() - ((start.getDay() + 6) % 7));                 // back to Monday
@@ -1076,68 +1282,83 @@ function horizonBlock() {
     const d = new Date(start); d.setDate(start.getDate() + n);
     const list = byDay[dayKey(d)] || [], fed = list.some((r) => r.kind === "FOMC");
     const isToday = dayKey(d) === dayKey(now), past = d < new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const label = String(d.getDate()), mon = d.getDate() === 1 ? F_MON.format(d) : "";
+    const mon = d.getDate() === 1 ? F_MON.format(d) : "";
     const cls = "day" + (list.length ? " has" : "") + (fed ? " fed" : "") + (isToday ? " today" : "") + (past ? " past" : "");
-    const kids = [mon ? el("span", { class: "mon" }, mon) : null, el("span", { class: "n" }, label), list.length ? el("span", { class: "tags" },
+    const kids = [mon ? el("span", { class: "mon" }, mon) : null, el("span", { class: "n" }, String(d.getDate())), list.length ? el("span", { class: "tags" },
       list.slice(0, 2).map((r) => el("i", {}, SHORTK[r.kind] || r.kind)), list.length > 2 ? el("i", {}, "+" + (list.length - 2)) : null) : null];
     const aria = d.toDateString() + (list.length ? ": " + list.map((r) => kindName(r) + " at " + clock(r.t)).join(", ") : "");
     cells.push(list.length
-      ? el("button", { class: cls, type: "button", "aria-label": aria, "data-i": String(list[0].i), style: null, onclick: () => pickEvent(list[0].i) }, kids)
+      ? el("button", { class: cls, type: "button", "aria-label": aria, "data-i": String(list[0].i), onclick: () => pickEvent(list[0].i) }, kids)
       : el("span", { class: cls, "aria-label": aria }, kids));
   }
-  const first = !store("desk-drawn");
-  store("desk-drawn", "1");
-  const shown = evs.slice(0, 6);
-  const list = el("ul", { class: "events", id: "events" }, shown.map((r, i) => el("li", { "data-i": String(i), onclick: () => pickEvent(i) },
-    el("span", { class: "d" }, F_DAY.format(new Date(r.t))),
-    el("span", { class: "t" + (r.kind === "FOMC" ? " fed" : "") }, el("b", {}, kindName(r)), " at " + clock(r.t) + (r.kind === "FOMC" ? ". The SOL rule can fire about an hour later." : "")))));
-  return el("div", { class: "horizon" + (first ? " draw" : "") },
-    el("h2", { class: "h2" }, "The next five weeks"),
-    el("div", { class: "cal", role: "group", "aria-label": "Major US news over the next five weeks" }, head, cells),
-    el("p", { class: "legend small muted" }, el("i", { class: "sw fed" }), "Fed night", el("i", { class: "sw" }), "Other US news", el("i", { class: "sw now" }), "Today"), list);
+  return [el("div", { class: "cal", role: "group", "aria-label": "Major US news over the next five weeks" }, head, cells),
+    el("p", { class: "legend small muted" }, el("i", { class: "sw fed" }), "Fed night", el("i", { class: "sw" }), "Other US news", el("i", { class: "sw now" }), "Today")];
+}
+function upcomingBlock() {
+  const evs = nextReleases();
+  if (!evs.length) return null;
+  const later = evs.slice(1, 7);
+  return el("section", { class: "upcoming" },
+    el("div", { class: "h2row" }, el("h2", { class: "h2" }, "After that")),
+    later.length ? el("ul", { class: "events", id: "events" }, later.map((r) => {
+      const i = evs.indexOf(r);
+      return el("li", { "data-i": String(i) }, el("details", { class: "ev" },
+        el("summary", {}, el("span", { class: "d" }, F_DAY.format(new Date(r.t))),
+          el("span", { class: "t" + (r.kind === "FOMC" ? " fed" : "") }, el("b", {}, kindName(r)), " at " + clock(r.t) + (r.kind === "FOMC" ? ". The SOL rule can fire about an hour later." : ""))),
+        el("div", { class: "ev-body" }, stepsList(r), el("div", { class: "row" }, stepsCalButton(r)))));
+    })) : el("p", { class: "small muted" }, "Nothing else in the next six weeks."),
+    el("details", { class: "more" }, el("summary", {}, "The next five weeks", ic("chev")), el("div", {}, calendarGrid(evs))));
 }
 function pickEvent(i) {
-  document.querySelectorAll(".horizon .day.has, #events li").forEach((n) => n.classList.toggle("on", n.dataset.i === String(i)));
+  document.querySelectorAll(".upcoming .day.has, #events li").forEach((n) => n.classList.toggle("on", n.dataset.i === String(i)));
   const li = document.querySelector('#events li[data-i="' + i + '"]');
-  if (li) li.scrollIntoView({ block: "nearest", behavior: calm() ? "auto" : "smooth" });
+  if (li) { const d = li.querySelector("details"); if (d) d.open = true; li.scrollIntoView({ block: "nearest", behavior: calm() ? "auto" : "smooth" }); }
+  else { const r = nextReleases()[i]; if (r) toast(kindName(r) + ": " + dayTime(r.t) + "."); }
 }
 function chipFor(c) {
   const d = String(c.decision || "");
   if (d.startsWith("SIGNAL")) return el("span", { class: "chip sig" }, "Signal");
   if (c.error) return el("span", { class: "chip bad" }, "Not checked");
+  if (c.blocked_signal) return el("span", { class: "chip care" }, "Paused");
   if (d === "WAIT") return el("span", { class: "chip watch" }, "Wait");
   return el("span", { class: "chip" }, "No trade");
 }
+function coinNote(k, c) {
+  // one short line under a coin, only when there is something to know about it
+  if (c && c.blocked_signal) return ["care", "Its tested rule fired but is paused: see the top of the page."];
+  if (c && c.error) return ["", "No data in the last check."];
+  const fn = fedNight();
+  if (k === "SOL" && fn && fn.fed.t - Date.now() < 72 * 3600000 && Date.now() < fn.read + 15 * 60000) return ["fed", "Fed rule: Trinetra checks it " + dayTime(fn.read) + "."];
+  return null;
+}
 function coinsBlock() {
-  const T = S.today;
-  const byCoin = {};
+  const T = S.today, byCoin = {};
   for (const c of (T && T.coins) || []) byCoin[coinOf(c.symbol)] = c;
-  return el("div", {}, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Your coins"), el("a", { class: "small", href: "#coins" }, "Check another coin")),
-    el("ul", { class: "coins" + (S.coinsShown ? "" : " first") }, watchlist().map((k) => {
-      const c = byCoin[k];
-      return el("li", {}, el("a", { href: "#coins/" + k },
-        el("span", { class: "sym" }, k), el("span", { class: "px" }, c && c.price ? num(c.price) : ""), c ? chipFor(c) : el("span", { class: "chip" }, "Not yet")));
+  return el("section", { class: "coins-box" }, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Your coins"), el("a", { class: "small", href: "#coins" }, "Check another coin")),
+    el("ul", { class: "coins panel" + (S.coinsShown ? "" : " first") }, watchlist().map((k) => {
+      const c = byCoin[k], note = coinNote(k, c);
+      return el("li", {}, el("a", { href: "#coins/" + k, "aria-label": k + ": " + (c ? (c.error ? "not checked" : String(c.decision || "").toLowerCase()) : "not checked yet") + ". Open its chart and checks." },
+        el("span", { class: "sym" }, k), el("span", { class: "px" }, c && c.price ? num(c.price) : ""), c ? chipFor(c) : el("span", { class: "chip" }, "Not yet"),
+        note ? el("span", { class: "note " + note[0] }, note[1]) : null));
     })));
 }
 function detailsBlock() {
   const T = S.today;
   if (!T) return null;
-  const watch = T.watch || [], heads = T.headlines || [], gaps = T.errors || [];
-  return el("div", {},
-    watch.length ? el("details", { class: "more" }, el("summary", {}, "Watching, not signals (" + watch.length + ")", ic("chev")),
-      el("div", {}, el("ul", { class: "list" }, watch.slice(0, 8).map((w) => el("li", {}, el("b", {}, coinOf(w.symbol) + " " + String(w.idea).replace(/_/g, " ")), ": " + plain(w.why_not)))))) : null,
-    heads.length ? el("details", { class: "more" }, el("summary", {}, "Headlines (" + heads.length + ")", ic("chev")),
-      el("div", {}, el("ul", { class: "list" }, heads.map((h) => el("li", {}, el("span", { class: "muted" }, (h.source || "") + " " + (h.t ? clock(h.t) : "") + ". "), safeLink(h.link, h.title || "")))),
-        el("p", { class: "small muted" }, "Headlines are shown as found; the engine's signals do not depend on them. The agent desk reads the news in depth."))) : null,
-    gaps.length ? el("details", { class: "more" }, el("summary", {}, "Data gaps (" + gaps.length + ")", ic("chev")),
-      el("div", {}, el("ul", { class: "list" }, gaps.slice(0, 8).map((g) => el("li", { class: "small" }, g)))))
-      : null);
+  const watch = T.watch || [], gaps = T.errors || [];
+  return el("section", { class: "extras" },
+    watch.length ? el("details", { class: "more" }, el("summary", {}, el("span", {}, "Watching, not signals ", el("span", { class: "n" }, "(" + watch.length + ")")), ic("chev")),
+      el("div", {}, el("ul", { class: "list" }, watch.slice(0, 8).map((w) => el("li", {}, el("b", {}, coinOf(w.symbol) + " " + String(w.idea).replace(/_/g, " ")), ": " + plain(w.why_not)))),
+        el("p", { class: "small muted" }, "Ideas the engine looked at and turned down. They are not trades."))) : null,
+    gaps.length ? el("details", { class: "more" }, el("summary", {}, el("span", {}, "Data gaps ", el("span", { class: "n" }, "(" + gaps.length + ")")), ic("chev")),
+      el("div", {}, el("ul", { class: "list" }, gaps.slice(0, 8).map((g) => el("li", { class: "small" }, g))))) : null);
 }
-function newsBlock() {
+function newsCheckCard() {
   const n = S.today && S.today.news_check;
   if (!n) {
     return CL.link ? el("div", { class: "newsck" }, el("div", { class: "row between" }, el("p", { class: "kind" }, "News check"), el("span", { class: "chip" }, "None yet")),
-      el("p", { class: "small muted" }, "Claude's research runs at 08:33 IST each day, and at 23:33, 00:03 and 00:32 on Fed nights. Its findings appear here and can pause or halve a trade, never create one.")) : null;
+      el("p", { class: "small muted" }, "Claude's research runs at 08:33 IST each day, and at 23:33, 00:03 and 00:32 on Fed nights. Its findings appear here and can pause or halve a trade, never create one."))
+      : el("p", { class: "hint-line" }, "No research news check yet. ", el("a", { href: "#settings/claude" }, "Connect Claude"), " and its daily research appears here: it can pause or halve a trade, never create one.");
   }
   const mk = n.market || { level: "normal", reasons: [] };
   const coins = Object.entries(n.coins || {}).filter(([, v]) => v.level !== "normal");
@@ -1147,8 +1368,8 @@ function newsBlock() {
   const reasons = (mk.level !== "normal" ? (mk.reasons || []).map((r) => ["Market", r]) : []).concat(coins.flatMap(([k, v]) => (v.reasons || []).map((r) => [k, r])));
   const effect = lvl === "extreme" ? " New trades on the affected coins are blocked." : lvl === "elevated" ? " Trades on the affected coins are sized at half." : "";
   return el("div", { class: "newsck " + lvl },
-    el("div", { class: "row between" }, el("p", { class: "kind" }, "News check"), el("span", { class: "chip " + { normal: "ok", elevated: "watch", extreme: "bad", stale: "" }[lvl] }, head)),
-    el("p", { class: "small" }, n.summary || (lvl === "normal" ? "Claude's research found nothing confirmed that changes today's plan." : "")),
+    el("div", { class: "row between" }, el("p", { class: "kind" }, "News check"), el("span", { class: "chip " + { normal: "ok", elevated: "care", extreme: "bad", stale: "" }[lvl] }, head)),
+    n.summary || lvl === "normal" ? el("p", { class: "small" }, n.summary || "Claude's research found nothing confirmed that changes today's plan.") : null,
     reasons.length ? el("ul", { class: "list small" }, reasons.slice(0, 5).map(([k, r]) => el("li", {}, el("b", {}, k + ": "), r.text + " ",
       (r.sources || []).slice(0, 2).map((u, i) => [safeLink(u, i ? "source 2" : "source"), " "])))) : null,
     el("p", { class: "small muted" }, (n.source || "Research") + ", " + ago(n.made_at) + "." + effect + " News can pause or shrink a trade, never create one."),
@@ -1156,13 +1377,25 @@ function newsBlock() {
       await call("news_clear"); log("news", "news check removed by hand"); syncSoon(); toast("News check removed."); runToday("news check removed");
     }) }, "Ignore this check") : null);
 }
+function newsBlock() {
+  const T = S.today;
+  if (!T) return null;
+  const heads = T.headlines || [];
+  const item = (h) => el("li", {}, el("span", { class: "src" }, (h.source || "") + (h.t ? ", " + clock(h.t) : "")), safeLink(h.link, h.title || ""));
+  return el("section", { class: "news" },
+    el("div", { class: "h2row" }, el("h2", { class: "h2" }, "News")),
+    newsCheckCard(),
+    heads.length ? el("ul", { class: "heads" }, heads.slice(0, 3).map(item)) : el("p", { class: "small muted" }, T.headlines_ok === false ? "No news feed answered. Signals don't depend on headlines." : "No headlines touching your coins right now."),
+    heads.length > 3 ? el("details", { class: "more" }, el("summary", {}, el("span", {}, "All headlines ", el("span", { class: "n" }, "(" + heads.length + ")")), ic("chev")),
+      el("div", {}, el("ul", { class: "heads" }, heads.slice(3).map(item)),
+        el("p", { class: "small muted" }, "Shown as found. The engine's signals don't depend on headlines; Claude's research reads the news in depth."))) : null);
+}
 function renderHome() {
   const box = $("view-home");
   const sig = ((S.today && S.today.signals) || []);
-  const left = el("div", { class: "col" }, sig.length ? [ticketBlock(sig[0]), ...sig.slice(1).map((c) => ticketBlock(c))] : verdictBlock());
-  if (sig.length) add(left, [el("div", { class: "when small muted" }, el("span", { "data-ago": String(S.todayAt) }, "Checked " + ago(S.todayAt)))]);
-  add(left, [newsBlock(), nextNewsBlock()]);
-  const right = el("div", { class: "col" }, coinsBlock(), agentCard(), horizonBlock(), detailsBlock());
+  const answer = el("section", { class: "answer" }, sig.length ? sig.map((c) => ticketBlock(c)) : verdictBlock(), sig.length ? checkedLine() : null);
+  const left = el("div", { class: "col" }, answer, nextBlock(), newsBlock());
+  const right = el("div", { class: "col" }, coinsBlock(), agentCard(), upcomingBlock(), detailsBlock());
   box.replaceChildren(el("div", { class: "home" }, left, right));
   if (S.today) S.coinsShown = true;
   document.title = sig.length && !S.todayDemo ? "● Signal: " + coinOf(sig[0].symbol) + " | Trinetra" : "Trinetra";
@@ -1228,35 +1461,61 @@ async function askAgents(c, btn) {
   window.open("https://claude.ai/new", "_blank", "noopener");
   if (view() === "home") renderHome();
 }
+// Claude's latest call on each coin (from the record, the last 36 hours), set against what Trinetra itself says. A call
+// from the agent desk is never a signal: it is scored apart in Record, and only the engine's tested rules make signals.
+function agentCallsView() {
+  const box = el("div", { class: "agent-calls", hidden: true });
+  call("records").then((txt) => {
+    const rows = (JSON.parse(txt).rows || []).filter((r) => r.decision === "TRACK" && r.track_kind === "agent desk" && Date.now() - (r.ts || 0) < 36 * HOUR);
+    const latest = {};
+    for (const r of rows) { const k = coinOf(r.symbol); if (!latest[k] || r.ts > latest[k].ts) latest[k] = r; }
+    const order = watchlist().concat(Object.keys(latest).filter((k) => !watchlist().includes(k)));
+    const ks = order.filter((k) => latest[k]);
+    if (!ks.length) return;
+    const eng = {};
+    for (const c of (S.today && S.today.coins) || []) eng[coinOf(c.symbol)] = c;
+    const sigSide = (c) => { const cd = (c && c.candidate) || {}; return c && String(c.decision || "").startsWith("SIGNAL") ? cd.side : null; };
+    const word = (side) => side === "long" ? "buy" : side === "short" ? "sell" : "stay flat";
+    add(box, [el("p", { class: "small" }, el("b", {}, "Claude's latest calls"), " (" + ago(Math.max(...ks.map((k) => latest[k].ts))) + ")"),
+      el("ul", { class: "calls-mini" }, ks.map((k) => {
+        const r = latest[k], s = sigSide(eng[k]);
+        const checked = eng[k] && !eng[k].error, dir = r.side === "long" || r.side === "short";
+        const rel = s && s === r.side ? ["ok", "agrees with Trinetra's signal"] : s ? ["bad", "disagrees: trade Trinetra's signal, or stay out"]
+          : !checked ? ["", dir ? "not a signal: Trinetra couldn't check " + k + " yet" : "no trade"]
+            : dir ? ["care", "not a signal: Trinetra's checks said no"] : ["", "Trinetra agrees: no trade"];
+        return el("li", {}, el("a", { href: "#coins/" + k }, el("b", {}, k), el("span", {}, cap(word(r.side)) + (r.entry && r.side !== "flat" ? " from " + num(r.entry) : "")),
+          el("span", { class: "chip " + rel[0] }, rel[1])));
+      })),
+      el("p", { class: "small muted" }, "Scored next to the engine in Record. Until the agent desk has 30 or more scored calls, its calls are untested.")]);
+    box.hidden = false;
+  }).catch(() => {});
+  return box;
+}
 function agentCard() {
+  const head = el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Second opinion"));
+  const added = Number(store("desk-agent-added") || 0);
   if (CL.link) {
     const phrase = "Use the Trinetra connector: read today's data in Trinetra, run the agent desk (crypto-futures-desk skill) on each coin, and save your calls to Trinetra.";
-    const added = Number(store("desk-agent-added") || 0);
-    return el("section", { class: "agent" },
-      el("h2", { class: "h2" }, "Second opinion"),
-      el("p", { class: "small muted" }, "Claude reads Trinetra's live data through the connector, debates, and saves its own call here. It's scored next to the engine; you still trade the engine's signals."),
-      el("ol", { class: "do" },
-        el("li", {}, el("button", { class: "btn solid", type: "button", onclick: async (ev) => {
-          if (await copyText(phrase, "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened, with the Trinetra connector on.")) {
-            store("desk-agent-asked", String(Date.now())); log("app", "agent desk asked through the connector"); window.open("https://claude.ai/new", "_blank", "noopener");
-          }
-        } }, ic("spark"), "Ask Claude"), el("span", { class: "hint" }, "A one-line request: Claude fetches the data itself.")),
-        el("li", {}, el("span", { class: "hint" }, "Claude's calls arrive in Record by themselves within a few minutes."))),
-      added && Date.now() - added < 24 * 3600000 ? el("p", { class: "small status-line" }, "Calls added " + ago(added) + ". They are scored in Record.") : null);
+    return el("section", { class: "agent panel" }, head,
+      el("p", { class: "small muted" }, "Claude reads Trinetra's data through the connector, debates, and saves its own call on each coin. It is scored next to the engine in Record. It is never a signal: trade only Trinetra's."),
+      el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: async (ev) => {
+        if (await copyText(phrase, "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened, with the Trinetra connector on.")) {
+          store("desk-agent-asked", String(Date.now())); log("app", "agent desk asked through the connector"); window.open("https://claude.ai/new", "_blank", "noopener");
+        }
+      } }, ic("spark"), "Ask Claude"), el("span", { class: "hint" }, "Its calls arrive here and in Record by themselves.")),
+      agentCallsView());
   }
-  const asked = Number(store("desk-agent-asked") || 0), added = Number(store("desk-agent-added") || 0);
+  const asked = Number(store("desk-agent-asked") || 0);
   const waiting = asked && asked > added && Date.now() - asked < 2 * 3600000;
   const status = waiting ? "Waiting for Claude's reply (asked " + ago(asked) + "). Tap the link at the end of it."
     : added && Date.now() - added < 24 * 3600000 ? "Calls added " + ago(added) + ". They are scored in Record." : "";
-  return el("section", { class: "agent" },
-    el("h2", { class: "h2" }, "Second opinion"),
-    el("p", { class: "small muted" }, "Claude's agent desk reads the news, debates and makes its own call. It's scored next to the engine; you still trade the engine's signals."),
-    el("ol", { class: "do" },
-      el("li", {}, el("button", { class: "btn solid", type: "button", disabled: !S.today || null, onclick: (ev) => askAgents(null, ev.currentTarget) }, ic("spark"), "Copy and open Claude"),
-        el("span", { class: "hint" }, "Then paste in the new chat.")),
-      el("li", {}, el("button", { class: "btn", type: "button", onclick: (ev) => pasteAgentReply(ev.currentTarget) }, ic("copy"), "Add Claude's calls"),
-        el("span", { class: "hint" }, "Or tap “Add these calls to Trinetra” in Claude's reply."))),
-    status ? el("p", { class: "small status-line" + (waiting ? " wait" : "") }, status) : null);
+  return el("section", { class: "agent panel" }, head,
+    el("p", { class: "small muted" }, "Claude's agent desk reads the news, debates and makes its own call. It is scored next to the engine in Record. It is never a signal: trade only Trinetra's."),
+    el("div", { class: "row" },
+      el("button", { class: "btn solid", type: "button", disabled: !S.today || null, onclick: (ev) => askAgents(null, ev.currentTarget) }, ic("spark"), "Copy and open Claude"),
+      el("button", { class: "btn", type: "button", onclick: (ev) => pasteAgentReply(ev.currentTarget) }, ic("copy"), "Add Claude's calls")),
+    el("p", { class: "small muted" }, "Paste in the new chat. At the end of Claude's reply, tap “Add these calls to Trinetra”, or copy the reply and tap Add Claude's calls."),
+    waiting ? el("p", { class: "small status-line wait" }, status) : null, agentCallsView());
 }
 function parseAgentLink(payload) {
   // v1;made=2026-10-26T06:14Z;SOLUSDT,long,101.03,98.6,105.2,24,0.55;BTCUSDT,flat,,,,24,
@@ -1285,8 +1544,8 @@ async function addAgentCalls(text, calls) {
 function confirmAgentCalls(calls) {
   openSheet((close) => [
     el("h2", {}, "Add the agent desk's calls?"),
-    el("ul", { class: "calls" }, calls.map((c) => el("li", {}, el("span", { class: "d" }, coinOf(c.symbol)),
-      el("span", {}, el("b", {}, c.side), c.side !== "flat" ? " from " + num(c.entry) + ", stop " + num(c.stop) + ", target " + num(c.target) : ""), el("span", {})))),
+    el("ul", { class: "list confirm-calls" }, calls.map((c) => el("li", {}, el("b", {}, coinOf(c.symbol)),
+      el("span", {}, el("b", {}, c.side), c.side !== "flat" ? " from " + num(c.entry) + ", stop " + num(c.stop) + ", target " + num(c.target) : "")))),
     el("p", { class: "small muted" }, "They are scored like the engine's calls. Nothing is traded."),
     el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: async (ev) => withSpin(ev.currentTarget, async () => { await addAgentCalls(null, calls); close(); }) }, "Add " + calls.length + (calls.length === 1 ? " call" : " calls")),
       el("button", { class: "btn quiet", type: "button", onclick: close }, "Cancel"))]);
@@ -1344,60 +1603,69 @@ function renderCoins() {
   const T = S.today, byCoin = {};
   for (const c of (T && T.coins) || []) byCoin[coinOf(c.symbol)] = c;
   box.replaceChildren(el("div", { class: "page" }, el("a", { class: "back", href: "#home" }, ic("chev"), "Today"), el("h1", {}, "Check a coin"),
-    el("p", { class: "muted" }, "Tap a coin for its full check: the plan, the history test, the rules and the chart."),
+    el("p", { class: "muted" }, "Each coin's page has the chart, the five checks a trade needs, and the plan when there is one."),
     el("ul", { class: "coins panel" }, watchlist().map((kk) => {
       const c = byCoin[kk];
       return el("li", {}, el("a", { href: "#coins/" + kk }, el("span", { class: "sym" }, kk),
-        el("span", { class: "px" }, c ? plain(c.why || "").slice(0, 90) : "Not checked yet"), c ? chipFor(c) : el("span", { class: "chip" }, "Not yet")));
+        el("span", { class: "px" }, c && c.price ? num(c.price) : "Not checked yet"), c ? chipFor(c) : el("span", { class: "chip" }, "Not yet"),
+        c && c.why ? el("span", { class: "note" }, cap(plain(c.why)).slice(0, 110) + (String(c.why).length > 110 ? "…" : "")) : null));
     })),
     el("form", { class: "row", onsubmit: (e) => { e.preventDefault(); const v = e.target.elements.c.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, ""); if (v) location.hash = "coins/" + v; } },
-      el("input", { class: "input", name: "c", placeholder: "Any other coin, e.g. DOGE", maxlength: "12", autocomplete: "off", "aria-label": "Coin" }),
+      el("input", { class: "input", name: "c", placeholder: "Any other coin, e.g. DOGE", maxlength: "12", autocomplete: "off", autocapitalize: "characters", "aria-label": "Coin" }),
       el("button", { class: "btn", type: "submit" }, "Check it"))));
 }
 async function renderCoin(k) {
   const box = $("view-coins");
   const st = S.coin[k] || {};
-  const head = [el("a", { class: "back", href: "#home" }, ic("chev"), "Today"), el("h1", {}, k)];
+  const back = el("a", { class: "back", href: "#home" }, ic("chev"), "Today");
   if (!st.B || Date.now() - st.at > 10 * 60000 || st.demo !== demo()) {
-    box.replaceChildren(el("div", { class: "page" }, head, el("div", { class: "verdict", "data-tone": "checking" }, el("p", { class: "why" }, "Running the full check on " + k + "."), el("div", { class: "progress" }, el("i")))));
-    if (st.loading) return;
-    S.coin[k] = { loading: true };
-    const isDemo = demo(), t0 = Date.now();
-    try {
-      const B = await engineJSON(isDemo, ["brief", k]);
-      const rd = B.run_dir;
-      const rj = async (f) => { try { return JSON.parse(await call("read_text", rd + "/" + f)); } catch (e) { return null; } };
-      S.coin[k] = { B, at: Date.now(), demo: isDemo, plan: rd ? await rj("plan.json") : null, sim: rd ? await rj("simulate.json") : null, chk: rd ? await rj("check.json") : null,
-        packet: B.packet ? await call("read_text", B.packet).catch(() => "") : "" };
-      log("run", "brief " + k + " in " + Math.round((Date.now() - t0) / 1000) + " s: " + ((B.decision || {}).decision || "?"), { demo: isDemo });
-    } catch (e) {
-      S.coin[k] = { error: pyErr(e), at: Date.now(), demo: isDemo };
-      log("error", "brief " + k + " failed: " + pyErr(e));
+    if (!st.error || st.demo !== demo()) {
+      box.replaceChildren(el("div", { class: "page" }, back, el("div", { class: "coin-title" }, el("h1", {}, k)),
+        el("div", { class: "verdict", "data-tone": "checking" }, el("p", { class: "why" }, "Running the full check on " + k + ": the chart, its setups, their history and your rules."), el("div", { class: "progress" }, el("i")))));
+      if (st.loading) return;
+      S.coin[k] = { loading: true };
+      const isDemo = demo(), t0 = Date.now();
+      try {
+        const B = await engineJSON(isDemo, ["brief", k]);
+        const rd = B.run_dir;
+        const rj = async (f) => { try { return JSON.parse(await call("read_text", rd + "/" + f)); } catch (e) { return null; } };
+        S.coin[k] = { B, at: Date.now(), demo: isDemo, plan: rd ? await rj("plan.json") : null, sim: rd ? await rj("simulate.json") : null, chk: rd ? await rj("check.json") : null,
+          packet: B.packet ? await call("read_text", B.packet).catch(() => "") : "" };
+        log("run", "brief " + k + " in " + Math.round((Date.now() - t0) / 1000) + " s: " + ((B.decision || {}).decision || "?"), { demo: isDemo });
+      } catch (e) {
+        S.coin[k] = { error: pyErr(e), at: Date.now(), demo: isDemo };
+        log("error", "brief " + k + " failed: " + pyErr(e));
+      }
+      if (view() === "coins" && (location.hash.split("/")[1] || "").toUpperCase() === k) renderCoin(k);
+      return;
     }
-    if (view() === "coins" && (location.hash.split("/")[1] || "").toUpperCase() === k) renderCoin(k);
+  }
+  if (st.error) {
+    box.replaceChildren(el("div", { class: "page" }, back, el("div", { class: "coin-title" }, el("h1", {}, k)),
+      el("div", { class: "verdict", "data-tone": "bad" }, el("p", { class: "why" }, k + " couldn't be checked: " + plain(st.error) + ".")),
+      el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: () => { delete S.coin[k]; renderCoin(k); } }, "Try again"),
+        el("a", { class: "btn", href: "#settings/health" }, "Connection test"))));
     return;
   }
   const { B, plan, sim, chk, packet } = st;
-  if (st.error) { box.replaceChildren(el("div", { class: "page" }, head, el("p", {}, st.error), el("button", { class: "btn", type: "button", onclick: () => { delete S.coin[k]; renderCoin(k); } }, "Try again"))); return; }
   const D = B.decision || {};
   const isSig = String(D.decision || "").startsWith("SIGNAL");
   const cand = (B.candidate || {});
   const kind = ((B.event || {}).kind) || "";
-  const setupKey = k + "USDT|" + kind + "|" + (cand.setup || (plan || {}).setup || "");
   const scenKey = k + "|" + kind + "|" + (cand.setup || (plan || {}).setup || "");
+  const todayRow = ((S.today && S.today.coins) || []).find((c) => coinOf(c.symbol) === k) || {};
+  const price = B.price || todayRow.price;
   const lights = coinLights(k, st);
-  const kids = [head,
-    el("div", { class: "row" }, chipFor({ decision: D.decision, error: D.decision === "NOT CHECKED" }), el("span", { class: "muted small" }, (st.demo ? "Made-up demo data" : "Binance data") + ", checked " + ago(st.at)),
-      el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Check again", onclick: () => { delete S.coin[k]; renderCoin(k); } }, ic("refresh"))),
-    el("p", { class: "lead" }, coinHeadline(k, D, plan, isSig)),
-    el("p", { class: "small muted steps-head" }, "A trade needs all five checks, in this order:"),
-    el("ul", { class: "lights", "aria-label": "The five checks" }, lights.map(([lv, title, text]) => el("li", { class: lv }, el("i", { "aria-hidden": "true" }), el("div", {}, el("b", {}, title), el("span", {}, text))))),
-    agentOpinion(k, isSig),
-    el("p", { class: "small next-chance" }, nextChance(k, isSig)),
-    B.hold_note && isSig ? el("p", { class: "small" }, B.hold_note) : null];
+  const head = el("div", { class: "coin-head" },
+    el("div", { class: "coin-title" }, el("h1", {}, k), price ? el("span", { class: "px" }, num(price)) : null),
+    el("div", { class: "row" }, chipFor({ decision: D.decision, error: D.decision === "NOT CHECKED", blocked_signal: B.blocked_signal }),
+      el("span", { class: "muted small" }, (st.demo ? "Demo data" : "Binance") + ", checked " + ago(st.at)),
+      el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Check again", title: "Check again", onclick: () => { delete S.coin[k]; renderCoin(k); } }, ic("refresh"))),
+    el("p", { class: "lead" }, coinHeadline(k, D, plan, isSig, lights)));
+  const side = [];
   if (isSig && plan) {
     const t1 = (plan.targets || [])[0] || {};
-    kids.push(el("div", { class: "panel plan-live" }, el("h2", {}, "Your plan"),
+    side.push(el("div", { class: "panel plan-live" }, el("h2", {}, "Your plan"),
       el("dl", { class: "kv" },
         el("dt", {}, "Order"), el("dd", {}, (plan.entry_type === "market" ? "Market order" : "Limit order") + " at about " + num(plan.entry) + (cand.expires ? ", before " + clock(cand.expires) : "")),
         el("dt", {}, "Stop"), el("dd", {}, num(plan.stop_distance_pct, 2) + "% from your fill (" + num(plan.stop) + " at the planned price)"),
@@ -1405,38 +1673,51 @@ async function renderCoin(k) {
         el("dt", {}, "Size"), el("dd", {}, num(plan.qty, 4) + " " + k + ", " + num(plan.notional, 0) + " USDT at " + plan.leverage + "x, isolated"),
         el("dt", {}, "If stopped"), el("dd", {}, "about " + num(plan.max_loss_at_stop, 2) + " USDT (" + num(plan.max_loss_pct_equity, 2) + "% of capital)"),
         el("dt", {}, "Close by"), el("dd", {}, dayTime(plan.close_by))),
+      B.hold_note ? el("p", { class: "small" }, B.hold_note) : null,
       (plan.notes || []).length ? el("ul", { class: "list small muted" }, plan.notes.map((n) => el("li", {}, n))) : null));
-    const w = wcgBlock(scenKey, plan);
-    if (w) kids.push(w);
-  } else if (plan) {
+  }
+  side.push(el("section", {},
+    el("div", { class: "checks-head" }, el("h2", { class: "h2" }, "The five checks"), el("span", { class: "small muted" }, "A trade needs all five")),
+    el("ul", { class: "lights", "aria-label": "The five checks, in order" }, lights.map(([lv, title, text]) => el("li", { class: lv }, el("i", { "aria-hidden": "true" }), el("div", {}, el("b", {}, title), el("span", {}, text)))))));
+  side.push(agentOpinion(k, isSig ? (plan && plan.side) || cand.side : null));
+  side.push(el("p", { class: "small next-chance" }, nextChance(k, isSig)));
+  if (isSig && plan) { const w = wcgBlock(scenKey, plan); if (w) side.push(w); }
+  else if (plan) {
     const t1 = (plan.targets || [])[0] || {};
-    kids.push(el("details", { class: "more rejected" }, el("summary", {}, "Looked at, not a trade", ic("chev")), el("div", {},
+    side.push(el("details", { class: "more rejected" }, el("summary", {}, "Looked at, not a trade", ic("chev")), el("div", {},
       el("p", { class: "small" }, "The engine checked a " + String((plan.setup || "manual")).replace(/_/g, " ") + " " + plan.side + " idea and turned it down: " + plain(D.why || "") + "."),
       el("dl", { class: "kv muted" },
         el("dt", {}, "Would enter"), el("dd", {}, num(plan.entry)), el("dt", {}, "Stop"), el("dd", {}, num(plan.stop)), el("dt", {}, "Target"), el("dd", {}, num(t1.price))),
       el("p", { class: "small muted" }, "Shown so you can see what was tested. It is not a position and not a suggestion."))));
   }
-  if (sim || chk) kids.push(el("details", { class: "more" }, el("summary", {}, "The engine's full checks", ic("chev")), el("div", {},
+  if (sim || chk) side.push(el("details", { class: "more" }, el("summary", {}, "The engine's full checks", ic("chev")), el("div", { class: "form" },
     sim ? el("p", { class: "small" }, el("b", {}, "History: "), plain(sim.verdict)) : null,
-    chk ? el("p", { class: "small" }, el("b", {}, "Rules: " + (chk.verdict === "PASS" ? "all passed" : "blocked")), (chk.blocks || []).length ? el("ul", { class: "list small" }, chk.blocks.map((b) => el("li", {}, plain(b)))) : null) : null,
+    chk ? el("div", { class: "small" }, el("b", {}, "Rules: " + (chk.verdict === "PASS" ? "all passed" : "blocked")), (chk.blocks || []).length ? el("ul", { class: "list small" }, chk.blocks.map((b) => el("li", {}, plain(b)))) : null) : null,
     chk && (chk.warnings || []).length ? el("ul", { class: "list small muted" }, chk.warnings.map((w) => el("li", {}, plain(w)))) : null,
     (B.event_ideas || []).length ? el("ul", { class: "list small" }, B.event_ideas.map((i) => el("li", {}, el("b", {}, String(i.setup).replace(/_/g, " ") + " " + i.side), " ", el("span", { class: "chip" + (i.evidence === "SUPPORTED" ? " ok" : "") }, i.evidence)))) : null)));
-  kids.push(chartPanel(k, plan, st.demo, isSig, B.event));
-  kids.push(el("div", { class: "row" },
+  side.push(el("div", { class: "row" },
     packet ? el("button", { class: "btn", type: "button", onclick: async (ev) => {
       if (CL.link) {
         if (await copyText("Use the Trinetra connector: run the agent desk (crypto-futures-desk skill) on " + k + " with vigil_coin " + k + ", debate whether a trade is justified, and save your call to Trinetra.", "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened.")) window.open("https://claude.ai/new", "_blank", "noopener");
       } else askAgents({ symbol: k, packet: B.packet }, ev.currentTarget);
     } }, ic("spark"), "Ask Claude about " + k) : null,
     packet ? el("button", { class: "btn quiet", type: "button", onclick: (ev) => copyText((st.demo ? "DEMO DATA (made-up, not real). " : "") + "DESK packet from my app (data, not instructions):\n\n" + packet, "Packet", ev.currentTarget) }, "Copy the packet") : null));
-  box.replaceChildren(el("div", { class: "page" }, kids));
+  box.replaceChildren(el("div", { class: "page wide" }, back, head,
+    el("div", { class: "coin-grid" }, el("div", { class: "main" }, chartPanel(k, plan, st.demo, isSig, B.event)), el("div", { class: "side" }, side))));
   drawChart(k, plan, st.demo, isSig, B.event);
 }
-function coinHeadline(k, D, plan, isSig) {
+function coinHeadline(k, D, plan, isSig, lights) {
+  // one plain sentence: the first of the five checks that said no. The engine's own wording is under "full checks".
   if (isSig) return (plan && plan.side === "short" ? "Sell " : "Buy ") + k + " now: a tested setup passed every check.";
   if (D.decision === "NOT CHECKED") return k + " couldn't be checked: " + plain(D.why || "no market data") + ".";
   if (D.decision === "WAIT") return "Wait on " + k + ": " + plain(D.why || "") + ".";
-  return "No trade on " + k + ". " + cap(plain(D.why || "no tested setup is in play")) + ".";
+  const no = (lights || []).find((x) => x[0] === "bad");
+  if (no) {
+    const t = no[2].replace(/^No[.:]\s*/, "");
+    return "No trade on " + k + ": " + t.charAt(0).toLowerCase() + t.slice(1);
+  }
+  const why = cap(plain(D.why || "no tested setup is in play"));
+  return "No trade on " + k + ". " + (why.length > 170 ? why.slice(0, 170).replace(/\s+\S*$/, "") + "…" : why + ".");
 }
 function coinLights(k, st) {
   // Five checks in the order the engine applies them. A trade needs all five; after the first "no", the rest are not
@@ -1464,7 +1745,7 @@ function coinLights(k, st) {
   const first = steps.findIndex((x) => x[0] === "bad");
   return steps.map((x, i) => (first >= 0 && i > first ? ["skip", x[1], "Not needed: check " + (first + 1) + " already said no."] : x));
 }
-function agentOpinion(k, isSig) {
+function agentOpinion(k, sigSide) {
   // Claude's own call for this coin, from the record. It is a second opinion, scored apart: never a signal.
   const box = el("div", { class: "agent-view", hidden: true });
   call("records").then((txt) => {
@@ -1473,9 +1754,10 @@ function agentOpinion(k, isSig) {
     if (!r) return;
     const side = r.side === "short" ? "sell" : r.side === "long" ? "buy" : "stay flat";
     add(box, [el("b", {}, "Claude's second opinion (" + ago(r.ts) + "): " + side + "."),
-      el("span", { class: "small" }, isSig ? " The engine agrees there is a trade: trade the engine's plan above."
+      el("span", { class: "small" }, sigSide && sigSide === r.side ? " Claude agrees with Trinetra's signal: trade the plan above."
+        : sigSide ? " Claude disagrees. Trinetra's signal comes from a tested rule and Claude's view is untested: trade the plan above, or stay out. Never take the opposite side."
         : r.side === "long" || r.side === "short" ? " This is not a Trinetra signal. The engine's checks said no, so Claude's view is untested. It is scored separately in Record; don't trade it."
-        : " The engine also says no trade.")]);
+        : " Trinetra also says no trade.")]);
     box.hidden = false;
   }).catch(() => {});
   return box;
@@ -1522,10 +1804,10 @@ function chartPanel(k, plan, isDemo, showPlan, ev) {
     el("div", { class: "subchart", id: "chart-macd", hidden: true }),
     el("button", { class: "btn icon-btn fs-x", type: "button", "aria-label": "Close full screen", onclick: exitFull }, ic("x")));
   return el("div", { class: "panel chartpanel" },
-    el("div", { class: "chartbar" }, el("h2", {}, "Chart"), tfSeg,
-      el("div", { class: "row tight chiprow" }, tog("ema", "EMA 21/50"), tog("ema200", "EMA 200"), tog("bb", "Bollinger"), tog("vwap", "VWAP"), tog("vol", "Volume"),
-        tog("rsi", "RSI"), tog("macd", "MACD"),
-        el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Full screen", title: "Full screen", onclick: enterFull }, ic("expand")))),
+    el("div", { class: "chartbar" }, el("h2", {}, "Chart"),
+      el("div", { class: "row tight" }, tfSeg, el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Full screen", title: "Full screen", onclick: enterFull }, ic("expand"))),
+      el("div", { class: "chiprow", role: "group", "aria-label": "Indicators" }, tog("ema", "EMA 21/50"), tog("ema200", "EMA 200"), tog("bb", "Bollinger"), tog("vwap", "VWAP"), tog("vol", "Volume"),
+        tog("rsi", "RSI"), tog("macd", "MACD"))),
     wrap,
     el("p", { class: "small muted" }, "EMA 21/50 are the engine's own trend lines. RSI above 70 or below 30 marks a stretched move; MACD crossing its signal line marks a change in momentum. These are for reading the chart: signals come only from the engine's tested rules. " + (showPlan ? "The lines across show your entry, stop and targets." : "No entry or stop lines: there is no trade.")),
     el("div", { class: "row" },
@@ -1624,7 +1906,7 @@ async function drawChart(coin, plan, isDemo, showPlan, ev) {
     }
     if (chartState.ema) {
       chart.addLineSeries({ color: color("--fed"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(emaLine(bars, 21));
-      chart.addLineSeries({ color: color("--brass"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(emaLine(bars, 50));
+      chart.addLineSeries({ color: color("--care"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(emaLine(bars, 50));
     }
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
     if (chartState.ema200 && bars.length > 200) chart.addLineSeries(Object.assign({ color: color("--ink"), lineWidth: 1.5 }, quiet)).setData(emaLine(bars, 200));
@@ -1647,7 +1929,7 @@ async function drawChart(coin, plan, isDemo, showPlan, ev) {
       const c3 = subChart($("chart-macd"), color), m = macdVals(bars);
       c3.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }).setData(bars.map((b, i) => m.hist[i] === null ? null : { time: toLocalSec(b[0]), value: m.hist[i], color: m.hist[i] >= 0 ? color("--calm-wash") : color("--ember-wash") }).filter(Boolean));
       c3.addLineSeries({ color: color("--fed"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, title: "MACD" }).setData(series(bars, m.line));
-      c3.addLineSeries({ color: color("--brass"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: "signal" }).setData(series(bars, m.sig));
+      c3.addLineSeries({ color: color("--care"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: "signal" }).setData(series(bars, m.sig));
       subs.push(c3);
     }
     subCharts = subs;
@@ -1704,54 +1986,76 @@ async function renderRecord() {
   const eng = sum((r) => r.decision === "TRACK" && r.track_kind === "signal");
   const agt = sum((r) => r.decision === "TRACK" && r.track_kind === "agent desk");
   const mine = sum((r) => r.decision === "TAKE");
-  const card = (title, s) => el("div", { class: "score" }, el("p", { class: "kind" }, title),
+  const card = (title, s, main) => el("div", { class: "score" + (main ? " main" : "") }, el("p", { class: "kind" }, title),
     s.avg === null ? el("p", { class: "big none" }, "None yet") : countUp(el("p", { class: "big" + (s.avg > 0 ? " up" : " down") }), s.avg),
-    el("p", { class: "small muted" }, s.avg === null ? (s.open ? s.open + " open" : "0 calls") : "a call, over " + s.scored + (s.scored === 1 ? " call" : " calls") + ", " + s.wins + " won"),
-    s.avg !== null && (s.open || s.flat) ? el("p", { class: "small muted" }, [s.open ? s.open + " open" : "", s.flat ? "stood aside " + s.flat : ""].filter(Boolean).join(", ")) : null);
+    el("p", { class: "unit" }, s.avg === null ? (s.open ? s.open + " open" : "0 scored calls") : "a call, " + s.scored + " scored, " + s.wins + " won"),
+    s.avg !== null && (s.open || s.flat) ? el("p", { class: "unit" }, [s.open ? s.open + " open" : "", s.flat ? s.flat + " stood aside" : ""].filter(Boolean).join(", ")) : null);
   const enough = eng.scored >= 30 && agt.scored >= 30;
   const verdict = !enough ? "Too early to compare: each desk needs 30 or more scored calls. Until then, trade only the engine's signals."
-    : (agt.avg > eng.avg + 0.15 ? "The agent desk is ahead by " + signed(agt.avg - eng.avg) + "R per call over " + agt.scored + " calls. Ask Claude to test whether that gap is real before switching."
+    : (agt.avg > eng.avg + 0.15 ? "The agent desk is ahead by " + signed(agt.avg - eng.avg) + "R a call over " + agt.scored + " calls. Ask Claude to test whether that gap is real before switching."
       : "The agent desk is not clearly ahead of the engine. Keep trading the engine's signals.");
   const kindLabel = (r) => r.decision === "TAKE" ? "You" : r.decision === "PAPER" ? "Paper" : r.track_kind === "agent desk" ? "Agents" : r.track_kind === "signal" ? "Engine" : r.track_kind === "news idea" ? "Idea" : r.track_kind === "chart pass" ? "Chart pass" : "Call";
-  const match = (r) => recordFilter === "all" ? (r.decision === "TAKE" || r.decision === "PAPER" || (r.decision === "TRACK" && ["signal", "agent desk"].includes(r.track_kind)))
+  const isMain = (r) => r.decision === "TAKE" || r.decision === "PAPER" || (r.decision === "TRACK" && ["signal", "agent desk"].includes(r.track_kind));
+  const match = (r) => recordFilter === "all" ? isMain(r)
     : recordFilter === "engine" ? r.decision === "TRACK" && r.track_kind === "signal" : recordFilter === "agents" ? r.decision === "TRACK" && r.track_kind === "agent desk"
       : recordFilter === "mine" ? r.decision === "TAKE" || r.decision === "PAPER" : recordFilter === "ideas" ? r.decision === "TRACK" && ["news idea", "chart pass"].includes(r.track_kind) : true;
-  const shown = rows.filter(match).slice(0, 60);
   const filt = (id, label) => el("button", { type: "button", "aria-pressed": recordFilter === id ? "true" : "false", onclick: () => { recordFilter = id; renderRecord(); } }, label);
   const outcomeChip = (r) => r.status === "resolved" ? el("span", { class: "chip " + (((r.outcome || {}).R || 0) > 0 ? "ok" : "bad") }, signed((r.outcome || {}).R) + "R " + ((r.outcome || {}).result || ""))
     : r.status === "flat" ? el("span", { class: "chip" }, "Stood aside") : r.status === "expired" ? el("span", { class: "chip" }, "Not filled") : el("span", { class: "chip watch" }, "Open");
+  // one call: a line with what and how it went; tap it for the levels, the fill and the notes
+  const callRow = (r) => {
+    const o = r.outcome || {}, t1 = ((r.targets || [])[0] || {}).price || (r.targets || [])[0];
+    const facts = [];
+    if (r.entry) facts.push(["Entry", num(r.fill || r.entry) + (r.fill && r.planned_entry ? " (planned " + num(r.planned_entry) + ")" : "")]);
+    if (r.stop) facts.push(["Stop", num(r.stop)]);
+    if (t1) facts.push(["Target", num(t1)]);
+    if (r.status === "resolved" && o.exit_price) facts.push(["Closed", num(o.exit_price) + (o.exit_t ? ", " + dayTime(o.exit_t) : "") + (o.result ? " (" + o.result + ")" : "")]);
+    if (r.close_by && r.status !== "resolved") facts.push(["Close by", dayTime(r.close_by)]);
+    else if (r.horizon_hours && r.status !== "resolved") facts.push(["Hold", "up to " + r.horizon_hours + " h"]);
+    if (r.prob !== undefined && r.prob !== null) facts.push(["Its odds", Math.round(r.prob * 100) + "%"]);
+    if (r.blocked_by) facts.push(["Blocked by", plain(String(r.blocked_by)).slice(0, 160)]);
+    return el("li", {}, el("details", { class: "call" },
+      el("summary", {}, el("span", { class: "d" }, F_DAY.format(new Date(r.ts))),
+        el("span", {}, el("b", {}, coinOf(r.symbol) + " " + (r.side || "")), " ", el("span", { class: "tag" }, kindLabel(r)),
+          r.slippage_pct !== undefined && r.slippage_pct !== null ? el("span", { class: "small muted" }, " fill " + signed(r.slippage_pct, 2) + "% vs plan") : null),
+        outcomeChip(r)),
+      el("div", { class: "call-body" },
+        facts.length ? el("dl", { class: "kv" }, facts.flatMap(([a, b]) => [el("dt", {}, a), el("dd", {}, b)])) : null,
+        r.setup ? el("p", { class: "small muted" }, "Setup: " + String(r.setup).replace(/_/g, " ") + (r.evidence ? ", " + String(r.evidence).toLowerCase() : "") + ".") : null,
+        r.notes ? el("p", { class: "small" }, String(r.notes).slice(0, 400)) : null,
+        !facts.length && !r.notes ? el("p", { class: "small muted" }, "No levels: a call to stand aside.") : null)));
+  };
   const P = S.perp;
   const perpBlock = el("div", { class: "panel" }, el("h2", {}, "The SOL Fed rule, night by night"),
-    P && P.n ? [el("p", {}, "On Binance perpetual prices with the funding actually paid: ", el("b", {}, signed(P.avg_R) + "R per trade over " + P.n + " Fed nights"),
+    P && P.n ? [el("p", {}, "On Binance perpetual prices with the funding actually paid: ", el("b", {}, signed(P.avg_R) + "R a trade over " + P.n + " Fed nights"),
       " (90% range " + signed((P.ci90 || [])[0]) + " to " + signed((P.ci90 || [])[1]) + "R). The original study on spot prices: " + signed((P.study || {}).avg_R) + "R over " + (P.study || {}).n + "."),
       perpBars(P.trades || []),
-      el("p", { class: "small muted" }, "Each bar is one Fed night since 2021: up is a win, down a loss, in R (1R is what the stop risks). Checked " + ago(P.checked_at) + "; refreshed monthly by itself.")]
+      el("p", { class: "small muted" }, "Each bar is one Fed night since 2021: up is a win, down a loss, in R (1R is what the stop risks). Checked " + ago(P.checked_at) + "; it refreshes monthly by itself.")]
       : el("p", { class: "muted" }, S.perpRunning ? "Loading the history from Binance (about a minute)." : demo() ? "Turn demo data off to load the real history." : "The history loads by itself after the first live check."),
     el("div", { class: "row" }, el("button", { class: "btn quiet", type: "button", disabled: demo() || null, onclick: (ev) => withSpin(ev.currentTarget, async () => {
       try { S.perp = JSON.parse(await call("perp_check")); log("run", "perpetual history refreshed by hand"); renderRecord(); } catch (e) { toast("Could not load it: " + pyErr(e)); }
     }) }, ic("refresh"), "Update now")));
   const tabBtn = (id, label) => el("button", { type: "button", role: "tab", "aria-selected": recordTab === id ? "true" : "false", onclick: () => { recordTab = id; document.startViewTransition && !calm() ? document.startViewTransition(() => renderRecord()) : renderRecord(); } }, label);
+  const recent = rows.filter(isMain).slice(0, 5);
   const scoreTab = [
-    el("div", { class: "scores" }, card("Engine", eng), card("Agent desk", agt), card("Your trades", mine)),
+    el("div", { class: "scores" }, card("Engine", eng, true), card("Agent desk", agt), card("Your trades", mine)),
     el("p", { class: "lead" }, verdict),
-    el("p", { class: "small muted" }, "Every call is scored by itself when its time is up. The three are kept apart, so a bad fill is never mistaken for a fading edge."),
+    el("div", { class: "panel" }, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Latest calls"), rows.filter(isMain).length > 5 ? el("button", { class: "btn quiet small", type: "button", onclick: () => { recordTab = "history"; renderRecord(); } }, "All of them") : null),
+      recent.length ? el("ul", { class: "calls" }, recent.map(callRow)) : el("p", { class: "muted small" }, "None yet. Calls appear here as the engine and the agent desk make them, and each is scored by itself when its time is up.")),
+    el("p", { class: "small muted" }, "The three are kept apart, so a bad fill is never mistaken for a fading edge. 1R is what one trade risks at its stop."),
     el("div", { class: "row" },
       el("button", { class: "btn", type: "button", onclick: (ev) => pasteAgentReply(ev.currentTarget) }, ic("copy"), "Add Claude's calls"),
       el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
         const r = await engine(["journal", "resolve"]); toast((r.out || r.err || "").trim().split("\n")[0] || "Scored."); syncSoon(); renderRecord();
       }) }, ic("refresh"), "Score open calls now"))];
+  const shown = rows.filter(match).slice(0, 60);
   const historyTab = [
     el("div", { class: "seg" }, filt("all", "All"), filt("engine", "Engine"), filt("agents", "Agent desk"), filt("mine", "Yours"), filt("ideas", "Only watched")),
-    shown.length ? el("ul", { class: "calls" }, shown.map((r) => el("li", {},
-      el("span", { class: "d" }, F_DAY.format(new Date(r.ts))),
-      el("span", {}, el("b", {}, coinOf(r.symbol) + " " + (r.side || "")), " ", el("span", { class: "tag" }, kindLabel(r)),
-        r.slippage_pct !== undefined && r.slippage_pct !== null ? el("span", { class: "small muted" }, " fill " + signed(r.slippage_pct, 2) + "% vs plan") : null,
-        r.notes ? el("div", { class: "small muted" }, String(r.notes).slice(0, 140)) : null),
-      outcomeChip(r)))) : el("p", { class: "muted" }, "Nothing here yet. Calls appear as the engine and the agent desk make them.")];
+    shown.length ? el("ul", { class: "calls" }, shown.map(callRow)) : el("p", { class: "muted" }, "Nothing here yet. Calls appear as the engine and the agent desk make them.")];
   box.replaceChildren(el("div", { class: "page" },
     el("h1", {}, "Record"),
     el("div", { class: "tabs", role: "tablist", "aria-label": "Record" }, tabBtn("score", "Scorecard"), tabBtn("history", "History"), tabBtn("sol", "SOL Fed rule")),
-    el("div", { class: "tabpanel swap", role: "tabpanel" }, recordTab === "history" ? el("div", { class: "panel" }, historyTab) : recordTab === "sol" ? perpBlock : scoreTab)));
+    el("div", { class: "tabpanel", role: "tabpanel" }, recordTab === "history" ? el("div", { class: "panel form" }, historyTab) : recordTab === "sol" ? perpBlock : scoreTab)));
 }
 function countUp(node, target) {
   node.textContent = signed(target) + "R";
@@ -1828,16 +2132,19 @@ function settingsCore(vals, onDone, compact) {
   return form;
 }
 function onboarding() {
-  openSheet((close) => [
-    el("h2", {}, "Set up Trinetra"),
-    el("p", { class: "muted" }, "Two things and you're done. Everything else runs by itself: the app checks the market every 15 minutes while it's open, and on Fed nights at the right minute."),
-    settingsCore(S.settings.values, () => { close(); navigator.storage && navigator.storage.persist && navigator.storage.persist().then((p) => (S.persisted = p)); runToday("first run"); }, true),
-    el("details", { class: "more" }, el("summary", {}, "Already use Trinetra on another device?", ic("chev")), el("div", {},
-      el("p", { class: "small" }, "On that device open Settings, then Sync, and scan its QR code with this device's camera. Or paste its sync code:"),
-      (() => { const inp = el("input", { class: "input mono", placeholder: "XXXX-XXXX-XXXX-…", autocomplete: "off", "aria-label": "Sync code" });
-        return el("div", { class: "row" }, inp, el("button", { class: "btn", type: "button", onclick: async (ev) => withSpin(ev.currentTarget, async () => { if (await linkWithCode(inp.value)) { close(); runToday("linked"); } }) }, "Link this device")); })())),
-    el("button", { class: "btn quiet", type: "button", onclick: () => { store("desk-demo", "1"); applyDemo(); close(); runToday("demo"); } }, "Just looking? Try it with demo data"),
-  ]);
+  openSheet((close) => {
+    const inp = codeInput();
+    return [
+      el("h2", {}, "Set up Trinetra"),
+      el("p", { class: "muted" }, "Two answers and you're done. After that it runs by itself: a check every 15 minutes while it's open, and on Fed nights at the right minute."),
+      settingsCore(S.settings.values, () => { close(); navigator.storage && navigator.storage.persist && navigator.storage.persist().then((p) => (S.persisted = p)); runToday("first run"); }, true),
+      el("details", { class: "more", open: IOS && STANDALONE ? true : null }, el("summary", {}, "Already use Trinetra on another device?", ic("chev")), el("div", { class: "form" },
+        el("p", { class: "small" }, "On that device open Settings, Sync, and tap Link a device. Type the code it shows here:"),
+        el("div", { class: "row" }, inp, el("button", { class: "btn solid", type: "button", onclick: async (ev) => withSpin(ev.currentTarget, async () => { if (await linkWithAny(inp.value)) { close(); runToday("linked"); } }) }, "Link this device")),
+        el("p", { class: "small muted" }, "Your settings, record and Claude connector come across. Nothing to set up again."))),
+      el("button", { class: "btn quiet", type: "button", onclick: () => { store("desk-demo", "1"); applyDemo(); close(); runToday("demo"); } }, "Just looking? Try it with demo data"),
+    ];
+  });
 }
 const ADV = [
   ["max_daily_loss_pct", "Daily loss limit (%)", "number", "Counts open trades too."], ["max_trades_per_day", "Most trades per day", "number", ""],
@@ -1845,6 +2152,38 @@ const ADV = [
   ["gst_on_fees_pct", "Tax on fees (%)", "number", "18 in India."], ["chart_signals", "Chart-setup signals", "bool", "Off by default: in 2020 to 2026 replays they lost on balance."],
   ["auto_track", "Track the engine's own calls", "bool", "Keeps the Record screen's engine scorecard."],
 ];
+// Settings is one grouped list. Each part folds to a single line that already says its state; tap to change it.
+const foldOpen = (id) => store("desk-fold-" + id) === "1";
+function fold(id, title, summary, body, opts) {
+  const o = opts || {};
+  const open = o.open !== undefined ? o.open : foldOpen(id);
+  // a part opened for you (a link to it, or a setting still missing) is not remembered as opened by you
+  let skip = !!open && !foldOpen(id);
+  return el("details", { class: "fold", id: id + "-fold", open: open || null, ontoggle: (e) => {
+    if (skip) { skip = false; return; }
+    store("desk-fold-" + id, e.currentTarget.open ? "1" : null);
+  } },
+    el("summary", {}, el("span", { class: "fold-t" }, el("b", {}, title), el("span", { class: "fold-s" + (o.tone ? " " + o.tone : "") }, summary)), ic("chev")),
+    el("div", { class: "fold-body" }, body));
+}
+function moneySummary(v) {
+  if (!(S.settings || {}).stored) return "Not set yet";
+  const cur = String(v.equity_currency || "USDT").toUpperCase();
+  const amt = cur === "INR" ? "₹" + num(v.equity, 0) : num(v.equity, 0) + " " + cur;
+  const r = RISK.find(([x]) => Math.abs(x - Number(v.risk_per_trade_pct)) < 1e-9);
+  return amt + ", " + (r ? r[1].toLowerCase() + " risk (" + r[0] + "%)" : v.risk_per_trade_pct + "% risk") + ", up to " + v.max_leverage + "x";
+}
+function syncSummary() {
+  if (!SYNC.code) return ["Off. Link your phone and laptop", ""];
+  if (SYNC.error) return ["Problem: " + SYNC.error, "bad"];
+  const n = Object.keys(SYNC.devices || {}).length;
+  return [(n > 1 ? n + " devices" : "On") + (SYNC.at ? ", synced " + ago(SYNC.at) : ""), "ok"];
+}
+function claudeSummary() {
+  if (!CL.link) return ["Not set up", ""];
+  if (CL.error) return ["Problem: " + CL.error, "bad"];
+  return [CL.sentAt ? "Working, data sent " + ago(CL.sentAt) : "Set up, sends after the next check", "ok"];
+}
 async function renderSettings() {
   const box = $("view-settings");
   await loadSettings().catch(() => {});
@@ -1870,46 +2209,59 @@ async function renderSettings() {
       : el("label", { class: "field" }, el("span", {}, label), el("input", { class: "input", type: type === "number" ? "number" : "text", step: "any", name: k, value: v[k] === null || v[k] === undefined ? "" : String(v[k]) }), hint ? el("span", { class: "hint" }, hint) : null)),
     el("div", { class: "row" }, el("button", { class: "btn solid", type: "submit" }, "Save")));
   const theme = store("desk-theme") || "system";
-  const themeSeg = el("div", { class: "seg", role: "group", "aria-label": "Appearance" }, [["system", "Match device"], ["light", "Light"], ["dark", "Dark"]].map(([id, label]) =>
+  const THEMES = [["system", "Match device"], ["light", "Light"], ["dark", "Dark"]];
+  const themeSeg = el("div", { class: "seg", role: "group", "aria-label": "Appearance" }, THEMES.map(([id, label]) =>
     el("button", { type: "button", "aria-pressed": theme === id ? "true" : "false", onclick: () => { store("desk-theme", id === "system" ? null : id); applyTheme(); renderSettings(); } }, label)));
-  const demoSw = el("input", { type: "checkbox", checked: demo(), onchange: (e) => { store("desk-demo", e.target.checked ? "1" : "0"); applyDemo(); S.today = null; S.coin = {}; S.health = null; runToday("demo switched"); toast(e.target.checked ? "Demo data on: kept apart from your record." : "Demo data off."); } });
-  const healthOut = el("div", {});
-  const logOut = el("div", {});
+  const demoSw = el("input", { type: "checkbox", checked: demo(), "aria-label": "Demo data", onchange: (e) => { store("desk-demo", e.target.checked ? "1" : "0"); applyDemo(); S.today = null; S.coin = {}; S.health = null; runToday("demo switched"); toast(e.target.checked ? "Demo data on: kept apart from your record." : "Demo data off."); } });
+  const healthOut = el("div", {}), logOut = el("div", {});
+  const items = healthItems(), bad = items.filter((x) => x.level === "bad").length;
+  const hash = location.hash.split("/")[1] || "";
+  const [ss, st] = syncSummary(), [cs, ct] = claudeSummary();
   box.replaceChildren(el("div", { class: "page" },
     el("h1", {}, "Settings"),
     S.settings && S.settings.problem ? el("div", { class: "panel" }, el("p", {}, el("b", {}, "Settings need a fix: "), S.settings.problem),
       el("button", { class: "btn", type: "button", onclick: async () => { toast("Reset: " + (JSON.parse(await call("repair_settings")).join(", ") || "nothing")); renderSettings(); } }, "Reset only what is broken")) : null,
-    el("div", { class: "panel" }, el("h2", {}, "Your money"), settingsCore(v, () => renderSettings())),
-    syncPanel(),
-    claudePanel(),
-    el("div", { class: "panel" }, el("h2", {}, "Appearance"), themeSeg),
-    el("div", { class: "panel" }, el("h2", {}, "Alerts and reminders"),
-      el("p", { class: "small" }, "Alerts show while Trinetra is open. Phones can pause a background tab, so the calendar reminders are the reliable way not to miss a Fed night."),
-      el("div", { class: "row" }, alertButton(), el("button", { class: "btn", type: "button", onclick: async () => download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar") }, ic("cal"), "Fed nights to calendar"))),
-    el("div", { class: "panel", id: "health" }, el("h2", {}, "Health and log"),
-      el("p", { class: "small" }, "If anything looks wrong, copy the report and paste it into Claude. It holds versions, checks and the recent log, without your capital."),
-      el("div", { class: "row" },
-        el("button", { class: "btn solid", type: "button", onclick: copyDiagnostics }, ic("copy"), "Copy report for Claude"),
-        el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, () => connectionTest(healthOut)) }, "Test the connection"),
-        el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => { const r = await engine(["selftest"]); S.selftest = /SELFTEST PASSED/.test(r.out + r.err); healthOut.replaceChildren(el("pre", { class: "out" }, (r.out + r.err).trim().slice(-1500))); log(S.selftest ? "app" : "error", "self-test by hand: " + (S.selftest ? "passed" : "FAILED")); renderStatus(); }) }, "Run the self-test"),
-        el("button", { class: "btn quiet", type: "button", onclick: () => showLog(logOut) }, "Show the log")),
-      healthOut, logOut),
-    el("details", { class: "more" }, el("summary", {}, "More settings", ic("chev")), el("div", {}, adv)),
-    el("div", { class: "panel" }, el("label", { class: "switch" }, el("span", {}, el("b", {}, "Demo data"), el("span", { class: "hint" }, " Made-up prices to try the app. Kept apart from your record.")), demoSw)),
-    el("div", { class: "panel" }, el("h2", {}, "Your data"),
-      el("p", { class: "small" }, "Settings, the record and the log live only in this browser. Export a backup to move devices."),
-      el("div", { class: "row" },
-        el("button", { class: "btn", type: "button", onclick: async () => download("desk-backup-" + new Date().toISOString().slice(0, 10) + ".json", await call("export_data"), "application/json") }, "Export backup"),
-        el("label", { class: "btn" }, "Import backup", el("input", { type: "file", accept: "application/json", hidden: true, onchange: async (e) => {
-          const f = e.target.files[0]; if (!f) return;
-          try { const done = JSON.parse(await call("import_data", await f.text())); toast("Imported: " + (done.join(", ") || "nothing")); log("app", "backup imported"); renderSettings(); }
-          catch (err) { toast("Import refused: " + pyErr(err)); }
-          e.target.value = "";
-        } })),
-        S.installPrompt ? el("button", { class: "btn", type: "button", onclick: async () => { S.installPrompt.prompt(); S.installPrompt = null; renderSettings(); } }, "Install Trinetra as an app") : null),
-      /iphone|ipad/i.test(navigator.userAgent) ? el("p", { class: "small muted" }, "On iPhone: tap Share, then Add to Home Screen.") : null),
+    el("div", {}, el("p", { class: "group-label" }, "Trading"),
+      el("div", { class: "folds" },
+        fold("money", "Your money", moneySummary(v), [
+          el("p", { class: "small muted" }, "Trinetra sizes every trade from these: the most one trade can lose is your capital times the risk, and the stop decides the size."),
+          settingsCore(v, () => { store("desk-fold-money", null); renderSettings(); })], { open: !(S.settings || {}).stored || foldOpen("money") }),
+        fold("limits", "Coins and limits", watchlist().join(", "), adv))),
+    el("div", {}, el("p", { class: "group-label" }, "Your devices and Claude"),
+      el("div", { class: "folds" },
+        fold("sync", "Sync and devices", ss, syncPanel(), { tone: st, open: hash === "sync" || foldOpen("sync") }),
+        fold("claude", "Claude connector", cs, claudePanel(), { tone: ct, open: hash === "claude" || foldOpen("claude") }),
+        fold("alerts", "Alerts and reminders", alertsOn() ? "Alerts on, on this device" : "Alerts off on this device", [
+          el("p", { class: "small" }, "Alerts show while Trinetra is open: a signal sounds, vibrates and stays on screen until you tap it. Phones can pause a background tab, so the calendar reminders are the sure way not to miss a Fed night."),
+          el("div", { class: "row" }, alertButton(), el("button", { class: "btn", type: "button", onclick: async () => download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar") }, ic("cal"), "Fed nights to calendar"))]))),
+    el("div", {}, el("p", { class: "group-label" }, "This app"),
+      el("div", { class: "folds" },
+        fold("look", "Appearance", (THEMES.find(([id]) => id === theme) || THEMES[0])[1], themeSeg),
+        el("div", { id: "health" }, fold("health", "Health and log", bad ? (bad === 1 ? "1 problem" : bad + " problems") : "All good", [
+          el("p", { class: "small" }, "If anything looks wrong, copy the report and paste it into Claude. It holds versions, checks and the recent log, without your capital."),
+          el("div", { class: "row" },
+            el("button", { class: "btn solid", type: "button", onclick: copyDiagnostics }, ic("copy"), "Copy report for Claude"),
+            el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, () => connectionTest(healthOut)) }, "Test the connection"),
+            el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => { const r = await engine(["selftest"]); S.selftest = /SELFTEST PASSED/.test(r.out + r.err); healthOut.replaceChildren(el("pre", { class: "out" }, (r.out + r.err).trim().slice(-1500))); log(S.selftest ? "app" : "error", "self-test by hand: " + (S.selftest ? "passed" : "FAILED")); renderStatus(); }) }, "Run the self-test"),
+            el("button", { class: "btn quiet", type: "button", onclick: () => showLog(logOut) }, "Show the log")),
+          healthOut, logOut], { tone: bad ? "bad" : "ok", open: hash === "health" || foldOpen("health") })),
+        fold("data", "Backup", "Export or import everything on this device", [
+          el("p", { class: "small" }, "Settings, the record and the log live in this browser" + (SYNC.code ? " and, encrypted, in your sync." : ". Turn on sync, or export a backup now and then."),
+            " Updates never touch them: an update replaces the app's files, not your data."),
+          el("div", { class: "row" },
+            el("button", { class: "btn", type: "button", onclick: async () => download("desk-backup-" + new Date().toISOString().slice(0, 10) + ".json", await call("export_data"), "application/json") }, "Export backup"),
+            el("label", { class: "btn" }, "Import backup", el("input", { type: "file", accept: "application/json", hidden: true, onchange: async (e) => {
+              const f = e.target.files[0]; if (!f) return;
+              try { const done = JSON.parse(await call("import_data", await f.text())); toast("Imported: " + (done.join(", ") || "nothing")); log("app", "backup imported"); renderSettings(); }
+              catch (err) { toast("Import refused: " + pyErr(err)); }
+              e.target.value = "";
+            } })),
+            S.installPrompt ? el("button", { class: "btn", type: "button", onclick: async () => { S.installPrompt.prompt(); S.installPrompt = null; renderSettings(); } }, "Install Trinetra as an app") : null),
+          IOS && !STANDALONE ? el("p", { class: "small muted" }, "On iPhone: tap Share, then Add to Home Screen.") : null]),
+        el("div", { class: "fold-row" }, el("label", { class: "switch" }, el("span", {}, el("b", {}, "Demo data"), el("span", { class: "hint" }, "Made-up prices to try the app. Kept apart from your record.")), demoSw)))),
   ));
-  if (location.hash === "#settings/health") $("health").scrollIntoView({ block: "start" });
+  if (hash === "health" && $("health")) $("health").scrollIntoView({ block: "start" });
+  else if ((hash === "sync" || hash === "claude") && $(hash + "-fold")) $(hash + "-fold").scrollIntoView({ block: "start" });
 }
 async function connectionTest(out) {
   out.replaceChildren(el("p", { class: "muted" }, "Testing each source from this browser."));
@@ -1935,6 +2287,7 @@ function applyDemo() { $("demo-band").hidden = !demo(); }
 setInterval(() => {
   document.querySelectorAll("[data-count]").forEach(fillCountdown);
   document.querySelectorAll("[data-left]").forEach((n) => (n.textContent = Number(n.dataset.left) > Date.now() ? inWords(Number(n.dataset.left)) + " left." : "Time is up: do not chase it."));
+  document.querySelectorAll("[data-pair]").forEach((n) => (n.textContent = pairLeft(Number(n.dataset.pair))));
 }, 1000);
 setInterval(() => {
   document.querySelectorAll("[data-ago]").forEach((n) => (n.textContent = "Checked " + ago(Number(n.dataset.ago))));

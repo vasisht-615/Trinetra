@@ -12,6 +12,8 @@ This repository is what Netlify deploys:
   Claude login, reads Trinetra's latest data and saves its research news check and the agent desk's calls for the app.
 - `netlify/functions/claude.mjs`: the app's side of the connector (it uploads its latest data and collects what Claude
   left). Stored encrypted with a key made from the connector token.
+- `netlify/functions/pair.mjs`: links a new device with an 8-character code (10 minutes, one use). The sync code is
+  left here encrypted with a key made from the short code, so the server never sees either code.
 - `netlify/functions/feed.mjs`: fetches news feeds that refuse browser requests (CoinDesk).
 - `netlify.toml`: publish `site/`, no build step; Netlify installs `@netlify/blobs` for the functions.
 
@@ -19,8 +21,9 @@ This repository is what Netlify deploys:
 
 1. **Netlify:** Add new project, Import an existing project, GitHub, pick this repository, Deploy (the settings
    come from netlify.toml). Every later push deploys by itself; the app shows a Reload bar when it is ready.
-2. **Trinetra:** open the site, answer the two setup questions. On your other devices, open Settings, Sync, Turn on sync
-   on the first one and scan its QR code with the others.
+2. **Trinetra:** open the site, answer the two setup questions. Then Settings, Sync and devices, Turn on sync, and Link a
+   device: type the 8-character code it shows on each other device (on iPhone, in the Home Screen app, which keeps its
+   own data apart from Safari).
 3. **Claude:** in Trinetra, Settings, Set up the connector. Then in Claude, Settings, Connectors, Add custom connector:
    name `Trinetra` and the private URL Trinetra shows (leave the OAuth fields empty). Turn it on in chats under +,
    Connectors, and add it to your scheduled research tasks.
