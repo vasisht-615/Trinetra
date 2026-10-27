@@ -1,4 +1,4 @@
-// The app's side of the Claude connector: Vigil uploads its latest data (so Claude can read it through the connector)
+// The app's side of the Claude connector: Trinetra uploads its latest data (so Claude can read it through the connector)
 // and collects what Claude left for it (the agent desk's calls and research news checks).
 //   PUT    /api/claude/feed     body: the app's latest data (JSON)        -> { at }
 //   GET    /api/claude/feed     -> { at, bytes } (when the data was last sent; not the data)

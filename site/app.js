@@ -1,8 +1,8 @@
-/* Vigil (the DESK web app). The engine (desk.py) runs in worker.js; this page asks it for results, explains them in plain words, keeps
+/* Trinetra (the DESK web app). The engine (desk.py) runs in worker.js; this page asks it for results, explains them in plain words, keeps
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.1-07f28aa76331";
+const BUILD = "1.3.1-1335fe80652f";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -21,7 +21,7 @@ function startWorker() {
   worker.onerror = (e) => { log("error", "engine worker error: " + (e.message || "unknown")); setStatus("bad", "Engine stopped"); };
 }
 function call(fn, ...args) {
-  if (!worker) return Promise.reject(new Error("Vigil is open in another tab or window; use that one."));
+  if (!worker) return Promise.reject(new Error("Trinetra is open in another tab or window; use that one."));
   return new Promise((resolve, reject) => {
     const id = ++seq;
     pending.set(id, { resolve, reject });
@@ -249,10 +249,10 @@ function healthItems() {
   }
   if (S.selftest === false) add("bad", "Engine self-test failed", "Copy the report below and send it to Claude.");
   else if (S.selftest === true) add("ok", "Engine self-test", "Passed for engine " + (S.meta || {}).engine + ".");
-  if (S.persisted === false) add("info", "Your data could be cleared by the browser", "Install Vigil as an app (Settings), or export a backup now and then.");
+  if (S.persisted === false) add("info", "Your data could be cleared by the browser", "Install Trinetra as an app (Settings), or export a backup now and then.");
   if (S.updateReady) add("info", "A new version is ready", "Use the Reload button at the top.");
-  if (CL.link && CL.error) add("info", "Claude connector: not working", CL.error + ". Vigil works as usual; Claude just can't read it right now.");
-  else if (CL.link && CL.sentAt) add("ok", "Claude connector", "Claude can read Vigil's data from " + ago(CL.sentAt) + ".");
+  if (CL.link && CL.error) add("info", "Claude connector: not working", CL.error + ". Trinetra works as usual; Claude just can't read it right now.");
+  else if (CL.link && CL.sentAt) add("ok", "Claude connector", "Claude can read Trinetra's data from " + ago(CL.sentAt) + ".");
   if (SYNC.code && SYNC.error) add("info", "Sync is not working", SYNC.error + ". Your data here is safe; it syncs again when this is fixed.");
   else if (SYNC.code && SYNC.at) add("ok", "Sync", "Synced with your other devices " + ago(SYNC.at) + ".");
   if (S.settings && S.settings.problem) add("bad", "Settings need a fix", S.settings.problem);
@@ -285,7 +285,7 @@ async function copyDiagnostics() {
   try {
     const txt = await call("diagnostics", JSON.stringify({ build: BUILD, ua: navigator.userAgent, health: S.health,
       issues: healthItems().filter((x) => x.level !== "ok").map((x) => x.title + ": " + x.detail) }));
-    copyText("Please check my Vigil app (the DESK web app, crypto-futures-desk skill) for problems and tell me how to fix them.\n\n" + txt, "Report");
+    copyText("Please check my Trinetra app (the DESK web app, crypto-futures-desk skill) for problems and tell me how to fix them.\n\n" + txt, "Report");
   } catch (e) { toast("Could not build the report: " + pyErr(e)); }
 }
 
@@ -376,7 +376,7 @@ async function backgroundExtras() {
   if (view() === "record") renderRecord();
 }
 // Alerts: only when there is something to do or to know (signals, Fed night steps, your open trade, a blocking problem,
-// research that changes risk). Each fires once; they show while Vigil is open. For a closed app, Claude's scheduled
+// research that changes risk). Each fires once; they show while Trinetra is open. For a closed app, Claude's scheduled
 // tasks push to your phone and calendar reminders cover the times.
 function noteSeen(key) {
   let m = {};
@@ -411,9 +411,9 @@ function notifySignals(T) {
     log("signal", "SIGNAL " + c.symbol + " " + cd.setup + " " + cd.side, { entry: cd.entry, stop: cd.stop, target: cd.target1, expires: cd.expires, demo: S.todayDemo });
     if (S.todayDemo) continue;
     const title = (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
-    const body = "Signal: " + (cd.side === "short" ? "a market sell" : "a market buy") + " before " + clock(cd.expires) + ". Open Vigil for the size, stop and target.";
+    const body = "Signal: " + (cd.side === "short" ? "a market sell" : "a market buy") + " before " + clock(cd.expires) + ". Open Trinetra for the size, stop and target.";
     // a signal is the one alert that must not be missed: the phone/computer notification (when allowed), a sound,
-    // a vibration, a banner that stays until tapped, and the tab title flashing until Vigil is looked at
+    // a vibration, a banner that stays until tapped, and the tab title flashing until Trinetra is looked at
     showNote(title, body, key);
     log("app", "alert: " + title + ": " + body);
     signalAlarm(title, body);
@@ -519,7 +519,11 @@ async function syncNow(reason, preferRemote) {
       } else if (got.status === 404) merged = JSON.parse(await call("sync_export"));
       else throw new Error(got.body.error || "sync answered " + got.status);
       preferRemote = false;
-      if (remoteShape !== null && syncShape(merged) === remoteShape) { SYNC.version = base; break; }   // already the same everywhere
+      let remoteDevices = {};
+      if (got.status === 200) { try { remoteDevices = JSON.parse(await open_(key, got.body.blob)).devices || {}; } catch (e) { /* kept empty */ } }
+      merged.devices = mergeDevices(remoteDevices);
+      SYNC.devices = merged.devices;
+      if (remoteShape !== null && syncShape(merged) === remoteShape && !devicesStale(remoteDevices)) { SYNC.version = base; break; }   // already the same everywhere
       const put = await syncApi("PUT", id, { base, blob: await seal(key, JSON.stringify(merged)) });
       if (put.status === 200) { SYNC.version = put.body.version; break; }
       if (put.status !== 409) throw new Error(put.body.error || "sync answered " + put.status);
@@ -540,6 +544,46 @@ async function syncNow(reason, preferRemote) {
   } finally {
     SYNC.busy = false; renderSyncBits(); renderStatus();
   }
+}
+// Each device leaves a small note in the encrypted synced copy (a random id, its kind, when it last synced), so every
+// device can show which devices share this data. Nothing identifying leaves the device unencrypted.
+function deviceId() {
+  let id = store("desk-device-id");
+  if (!id) { id = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join(""); store("desk-device-id", id); }
+  return id;
+}
+function deviceKind() {
+  const u = navigator.userAgent, touch = navigator.maxTouchPoints > 1;
+  const os = /iPhone/.test(u) ? "iPhone" : /iPad/.test(u) || (/Macintosh/.test(u) && touch) ? "iPad" : /Android/.test(u) ? (/Mobile/.test(u) ? "Android phone" : "Android tablet")
+    : /Macintosh/.test(u) ? "Mac" : /Windows/.test(u) ? "Windows PC" : /Linux/.test(u) ? "Linux computer" : "Device";
+  const br = /Edg\//.test(u) ? "Edge" : /CriOS|Chrome\//.test(u) ? "Chrome" : /FxiOS|Firefox\//.test(u) ? "Firefox" : /Safari\//.test(u) ? "Safari" : "browser";
+  const app = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+  return os + ", " + br + (app ? " (installed app)" : "");
+}
+function meDevice() {
+  const alerts = store("desk-alerts") === "1" && "Notification" in window && Notification.permission === "granted";
+  return { kind: deviceKind(), seen: Date.now(), alerts, engine: (S.meta || {}).engine || null, build: BUILD };
+}
+function devicesStale(remote) {
+  const mine = (remote || {})[deviceId()];
+  const me = meDevice();
+  return !mine || Date.now() - (mine.seen || 0) > 30 * 60000 || mine.kind !== me.kind || mine.alerts !== me.alerts || mine.build !== me.build;
+}
+function mergeDevices(remote) {
+  const out = {};
+  for (const [k, v] of Object.entries(remote || {})) if (v && Date.now() - (v.seen || 0) < 90 * 86400000) out[k] = v;   // forget devices unseen for 90 days
+  const mine = out[deviceId()];
+  out[deviceId()] = devicesStale(remote) ? meDevice() : mine;
+  return out;
+}
+function devicesList() {
+  const ds = Object.entries(SYNC.devices || {}).sort((a, b) => (b[1].seen || 0) - (a[1].seen || 0));
+  if (!ds.length) return null;
+  return el("div", {}, el("h3", { class: "h3" }, "Devices on this sync (" + ds.length + ")"),
+    el("ul", { class: "devices" }, ds.map(([id, d]) => el("li", {},
+      el("b", {}, d.kind + (id === deviceId() ? " (this device)" : "")),
+      el("span", { class: "small muted" }, "Synced " + ago(d.seen) + (d.alerts ? ". Alerts on." : ". Alerts off.") + (d.build && d.build !== BUILD ? " Older version: reload it." : ""))))),
+    el("p", { class: "small muted" }, "Settings, your record, the news check and the Claude connector are shared by all of them" + (CL.link ? " (the connector is set up)." : ".")));
 }
 function syncSoon() { if (!SYNC.code) return; clearTimeout(SYNC.timer); SYNC.timer = setTimeout(() => syncNow("change"), 4000); }
 function setSyncCode(code) {
@@ -575,7 +619,7 @@ function syncPanel() {
   const state = el("p", { id: "sync-state", class: "small" + (SYNC.error ? " bad-text" : "") }, syncStateText());
   if (!SYNC.code) {
     const inp = el("input", { class: "input mono", placeholder: "XXXX-XXXX-XXXX-…", autocomplete: "off", "aria-label": "Sync code" });
-    return el("div", { class: "panel", id: "sync" }, el("h2", {}, "Use Vigil on all your devices"),
+    return el("div", { class: "panel", id: "sync" }, el("h2", {}, "Use Trinetra on all your devices"),
       el("p", { class: "small" }, "Turn on sync here, then scan the QR code with your other device's camera. Settings and the record stay the same everywhere. Your data is encrypted on the device before it is stored."),
       el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", disabled: demo() || null, onclick: async (ev) => withSpin(ev.currentTarget, async () => {
         setSyncCode(newSyncCode()); await syncNow("turned on");
@@ -588,14 +632,14 @@ function syncPanel() {
       demo() ? el("p", { class: "small muted" }, "Turn demo data off to use sync.") : null, state);
   }
   const link = syncLink(SYNC.code);
-  return el("div", { class: "panel", id: "sync" }, el("h2", {}, "Sync is on"), state,
+  return el("div", { class: "panel", id: "sync" }, el("h2", {}, "Sync is on"), state, devicesList(),
     el("div", { class: "syncbox" }, qrImage(link),
       el("div", {}, el("p", { class: "small" }, "To add a device, scan this with its camera, or open the link on it."),
         el("p", { class: "code mono" }, showCode(SYNC.code)),
         el("div", { class: "row" },
           el("button", { class: "btn", type: "button", onclick: (ev) => copyText(link, "Sync link", ev.currentTarget, "Link copied. Open it on your other device.") }, ic("copy"), "Copy link"),
           el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, () => syncNow("by hand")) }, ic("refresh"), "Sync now")))),
-    el("p", { class: "small muted" }, "Keep this code like a password: anyone with it can read your Vigil data, and it's the only way back to it if you lose every device. Write it down somewhere safe."),
+    el("p", { class: "small muted" }, "Keep this code like a password: anyone with it can read your Trinetra data, and it's the only way back to it if you lose every device. Write it down somewhere safe."),
     el("details", { class: "more" }, el("summary", {}, "Stop syncing", ic("chev")), el("div", {},
       el("div", { class: "row" },
         el("button", { class: "btn", type: "button", onclick: () => { setSyncCode(""); log("sync", "sync turned off on this device"); toast("Sync is off on this device. Your data here stays."); renderSettings(); } }, "Turn off on this device"),
@@ -606,9 +650,9 @@ function syncPanel() {
 }
 
 // ================================================================ the Claude connector
-// One token links Vigil and your Claude account. After each check Vigil sends its latest data to this site's
+// One token links Trinetra and your Claude account. After each check Trinetra sends its latest data to this site's
 // connector; Claude (with your normal login, in chats and in scheduled tasks) reads it and leaves its research news
-// check and the agent desk's calls here, which Vigil collects and checks again before using.
+// check and the agent desk's calls here, which Trinetra collects and checks again before using.
 const CL = { link: null, sentAt: Number(store("desk-claude-sent") || 0), error: null, busy: false, available: null };
 const b64url = (u8) => b64(u8).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const newToken = () => b64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -677,7 +721,7 @@ function newsAlert(ctx) {
   const mine = new Set(watchlist());
   const hits = Object.entries(ctx.coins || {}).filter(([k, b]) => b.level !== "normal" && mine.has(coinOf(k))).map(([k, b]) => coinOf(k) + " " + b.level);
   if (ctx.market && ctx.market.level !== "normal") hits.unshift("market " + ctx.market.level);
-  if (hits.length) notify("News check: " + hits.join(", "), hits.some((h) => h.endsWith("extreme")) ? "Vigil blocks new trades on those until it clears." : "Trades on those are sized at half.", "news-" + ctx.made_at);
+  if (hits.length) notify("News check: " + hits.join(", "), hits.some((h) => h.endsWith("extreme")) ? "Trinetra blocks new trades on those until it clears." : "Trades on those are sized at half.", "news-" + ctx.made_at);
 }
 async function pullInbox(reason) {
   if (!CL.link || demo() || !engineReady) return;
@@ -713,7 +757,7 @@ async function pullInbox(reason) {
 function claudeStateText() {
   if (!CL.link) return "Not set up.";
   if (CL.error) return "Problem: " + CL.error;
-  return CL.sentAt ? "Working: Claude can read Vigil's latest data (sent " + ago(CL.sentAt) + ")." : "Set up. Nothing sent yet: it sends after the next check.";
+  return CL.sentAt ? "Working: Claude can read Trinetra's latest data (sent " + ago(CL.sentAt) + ")." : "Set up. Nothing sent yet: it sends after the next check.";
 }
 function renderClaudeBits() { const n = $("claude-state"); if (n) { n.textContent = claudeStateText(); n.className = "small" + (CL.error ? " bad-text" : ""); } }
 function copyRow(text, what, secret) {
@@ -728,7 +772,7 @@ async function testConnector() {
     if (!n) throw new Error((((r.body || {}).error) || {}).message || "it answered without tools");
     await sendFeed("test");
     if (CL.error) throw new Error(CL.error);
-    toast("The connector works (" + n + " tools) and has Vigil's latest data.");
+    toast("The connector works (" + n + " tools) and has Trinetra's latest data.");
     log("app", "connector test passed");
   } catch (e) { toast("Connector test failed: " + pyErr(e)); log("error", "connector test failed: " + pyErr(e)); }
   renderClaudeBits();
@@ -736,7 +780,7 @@ async function testConnector() {
 function claudePanel() {
   if (!CL.link) {
     return el("div", { class: "panel", id: "claude" }, el("h2", {}, "Connect Claude"),
-      el("p", { class: "small" }, "Claude reads Vigil's live data itself and saves its research and the agent desk's calls back here: no copying or pasting. It uses your normal Claude login; Vigil never sees your Claude account. Your scheduled research tasks use it too."),
+      el("p", { class: "small" }, "Claude reads Trinetra's live data itself and saves its research and the agent desk's calls back here: no copying or pasting. It uses your normal Claude login; Trinetra never sees your Claude account. Your scheduled research tasks use it too."),
       el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", disabled: demo() || null, onclick: (ev) => withSpin(ev.currentTarget, async () => {
         await call("claude_link_set", newToken());
         await loadClaudeLink();
@@ -752,12 +796,12 @@ function claudePanel() {
     el("p", { id: "claude-state", class: "small" + (CL.error ? " bad-text" : "") }, claudeStateText()),
     el("ol", { class: "steps-cl" },
       el("li", {}, "In Claude, open ", el("a", { href: "https://claude.ai/customize/connectors", target: "_blank", rel: "noopener noreferrer" }, "Settings, Connectors"), " and choose ", el("b", {}, "Add custom connector"), "."),
-      el("li", {}, "Name it ", el("b", {}, "Vigil"), ". Paste this as the server URL (it contains your private token) and leave the OAuth fields empty:", copyRow(url, "Connector URL", true)),
-      el("li", {}, "Save. In a chat, turn Vigil on under ", el("b", {}, "+, Connectors"), ". In each scheduled task, add Vigil under Connectors.")),
+      el("li", {}, "Name it ", el("b", {}, "Trinetra"), ". Paste this as the server URL (it contains your private token) and leave the OAuth fields empty:", copyRow(url, "Connector URL", true)),
+      el("li", {}, "Save. In a chat, turn Trinetra on under ", el("b", {}, "+, Connectors"), ". In each scheduled task, add Trinetra under Connectors.")),
     el("div", { class: "row" },
       el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, testConnector) }, "Test the connector"),
       el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => { await sendFeed("by hand"); await pullInbox("by hand"); toast(CL.error ? "Not sent: " + CL.error : "Sent to Claude, and collected anything Claude left."); }) }, ic("refresh"), "Send now")),
-    el("p", { class: "small muted" }, "Keep this address private: with it someone could read Vigil's latest data and leave notes (never trades). The data on this site is stored encrypted."),
+    el("p", { class: "small muted" }, "Keep this address private: with it someone could read Trinetra's latest data and leave notes (never trades). The data on this site is stored encrypted."),
     el("details", { class: "more" }, el("summary", {}, "Replace or remove the token", ic("chev")), el("div", {}, el("div", { class: "row" },
       el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
         await wipeConnector(); await call("claude_link_set", newToken()); await loadClaudeLink(); syncSoon(); await sendFeed("new token");
@@ -765,7 +809,7 @@ function claudePanel() {
       }) }, "Make a new token"),
       el("button", { class: "btn quiet danger", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
         await wipeConnector(); await call("claude_link_clear"); CL.link = null; syncSoon();
-        toast("Claude is disconnected and its copy of Vigil's data is deleted. Remove the connector in Claude too."); log("app", "connector removed"); renderSettings();
+        toast("Claude is disconnected and its copy of Trinetra's data is deleted. Remove the connector in Claude too."); log("app", "connector removed"); renderSettings();
       }) }, "Disconnect")))));
 }
 
@@ -791,18 +835,18 @@ function watchAlerts() {
   const now = Date.now(), fn = fedNight();
   if (fn) {
     const t = fn.fed.t;
-    if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Stay flat. Vigil checks SOL at " + clock(fn.read) + ".", "fed5-" + t);
+    if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Stay flat. Trinetra checks SOL at " + clock(fn.read) + ".", "fed5-" + t);
     // The read-time outcome, only from a check that started at or after the read time, and only what it really found:
     // "no signal" needs SOL to have been checked; a SOL check that failed or was paused says so instead.
     if ((S.todayFrom || 0) >= fn.read && now < fn.read + 30 * 60000 && S.today && !(S.today.signals || []).length) {
       const sol = (S.today.coins || []).find((c) => c.symbol === "SOLUSDT");
       const last = now >= fn.read + 14 * 60000;
-      if (sol && sol.error && last) notify("Vigil couldn't check SOL tonight", "It couldn't get SOL's prices in time, so the Fed rule was not checked. This is not a 'no signal' answer.", "fedsolfail-" + t);
-      else if (sol && sol.error) notify("Vigil couldn't check SOL yet", "It's trying again every 90 seconds until " + clock(fn.read + 14 * 60000) + ". Keep Vigil open.", "fedsolretry-" + t);
-      else if (sol && sol.blocked_signal) notify("The SOL rule fired, but it's paused", "The news check paused new trades. Open Vigil for the reason; nothing to place.", "fedblocked-" + t);
+      if (sol && sol.error && last) notify("Trinetra couldn't check SOL tonight", "It couldn't get SOL's prices in time, so the Fed rule was not checked. This is not a 'no signal' answer.", "fedsolfail-" + t);
+      else if (sol && sol.error) notify("Trinetra couldn't check SOL yet", "It's trying again every 90 seconds until " + clock(fn.read + 14 * 60000) + ". Keep Trinetra open.", "fedsolretry-" + t);
+      else if (sol && sol.blocked_signal) notify("The SOL rule fired, but it's paused", "The news check paused new trades. Open Trinetra for the reason; nothing to place.", "fedblocked-" + t);
       else if (sol) notify("No SOL signal tonight", "The Fed rule didn't fire. Nothing to do.", "fednone-" + t);
     }
-    if (now >= fn.read && now < fn.read + 15 * 60000 && S.todayError) notify("Vigil can't check the Fed rule", "It couldn't reach the market: check your connection and keep Vigil open.", "fedfail-" + t);
+    if (now >= fn.read && now < fn.read + 15 * 60000 && S.todayError) notify("Trinetra can't check the Fed rule", "It couldn't reach the market: check your connection and keep Trinetra open.", "fedfail-" + t);
   }
   for (const r of S.openTrades || []) {
     const cb = r.close_by || (r.ts + (r.horizon_hours || 24) * 3600000);
@@ -819,9 +863,9 @@ function watchAlerts() {
 function icsTime(ms) { return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, ""); }
 function closeIcs(sym, cb, plan) {
   const k = coinOf(sym), now = Date.now();
-  const L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Vigil//close reminder//EN", "BEGIN:VEVENT",
+  const L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Trinetra//close reminder//EN", "BEGIN:VEVENT",
     "UID:vigil-close-" + k + "-" + cb + "@vigil", "DTSTAMP:" + icsTime(now), "DTSTART:" + icsTime(cb - 15 * 60000), "DTEND:" + icsTime(cb),
-    "SUMMARY:Close your " + k + " trade by " + clock(cb), "DESCRIPTION:Vigil plan: close at market by " + clock(cb) + " (the tested plan never holds past this)."
+    "SUMMARY:Close your " + k + " trade by " + clock(cb), "DESCRIPTION:Trinetra plan: close at market by " + clock(cb) + " (the tested plan never holds past this)."
       + (plan && plan.stop ? " Stop " + num(plan.stop) + "." : ""),
     "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Close your " + k + " trade by " + clock(cb), "TRIGGER:-PT0M", "END:VALARM", "END:VEVENT", "END:VCALENDAR"];
   return L.join("\r\n") + "\r\n";
@@ -830,7 +874,7 @@ function offerCloseReminder(c, plan) {
   const cb = (plan && plan.close_by) || (c.candidate || {}).close_by;
   if (!cb) return;
   openSheet((close) => [el("h2", {}, "Logged. Add a reminder?"),
-    el("p", { class: "muted" }, "The plan closes by " + dayTime(cb) + ". A calendar reminder works even when Vigil is closed, on your iPhone, iPad or laptop."),
+    el("p", { class: "muted" }, "The plan closes by " + dayTime(cb) + ". A calendar reminder works even when Trinetra is closed, on your iPhone, iPad or laptop."),
     el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: () => { download("vigil-close-" + coinOf(c.symbol) + ".ics", closeIcs(c.symbol, cb, plan), "text/calendar"); log("app", "close reminder downloaded"); close(); } }, ic("cal"), "Add to my calendar"),
       el("button", { class: "btn quiet", type: "button", onclick: close }, "No thanks"))]);
 }
@@ -908,8 +952,8 @@ function verdictBlock() {
   }
   if (!T && !S.todayError && needsSetup()) {
     wrap.dataset.tone = "checking";
-    add(wrap, [el("h1", {}, "Set up to start."), el("p", { class: "why" }, "Tell Vigil your capital and risk once. Then it checks the market by itself."),
-      el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: onboarding }, "Set up Vigil"))]);
+    add(wrap, [el("h1", {}, "Set up to start."), el("p", { class: "why" }, "Tell Trinetra your capital and risk once. Then it checks the market by itself."),
+      el("div", { class: "row" }, el("button", { class: "btn solid", type: "button", onclick: onboarding }, "Set up Trinetra"))]);
     return wrap;
   }
   if (!T) {
@@ -1011,7 +1055,7 @@ function alertButton() {
     if (!("Notification" in window)) { toast("This browser cannot show alerts. Use the calendar reminders instead."); return; }
     if (on) { store("desk-alerts", "0"); toast("Alerts off."); renderHome(); return; }
     const p = await Notification.requestPermission();
-    if (p === "granted") { store("desk-alerts", "1"); toast("Alerts on while Vigil is open. Phones may pause it, so keep the calendar reminder too."); log("app", "alerts turned on"); }
+    if (p === "granted") { store("desk-alerts", "1"); toast("Alerts on while Trinetra is open. Phones may pause it, so keep the calendar reminder too."); log("app", "alerts turned on"); }
     else toast("Alerts were not allowed. You can allow them in the browser's site settings.");
     renderHome();
   } }, ic("bell"), on ? "Alerts on" : "Alert me here");
@@ -1121,7 +1165,7 @@ function renderHome() {
   const right = el("div", { class: "col" }, coinsBlock(), agentCard(), horizonBlock(), detailsBlock());
   box.replaceChildren(el("div", { class: "home" }, left, right));
   if (S.today) S.coinsShown = true;
-  document.title = sig.length && !S.todayDemo ? "● Signal: " + coinOf(sig[0].symbol) + " | Vigil" : "Vigil";
+  document.title = sig.length && !S.todayDemo ? "● Signal: " + coinOf(sig[0].symbol) + " | Trinetra" : "Trinetra";
   document.querySelectorAll('.nav a[data-view="home"] .badge-dot').forEach((n) => n.remove());
   if (sig.length && !S.todayDemo) document.querySelector('.nav a[data-view="home"]').append(el("i", { class: "badge-dot", "aria-hidden": "true" }));
 }
@@ -1153,12 +1197,12 @@ function agentPrompt(body, isDemo, made) {
   const link = agentLinkBase() + "v1;made=" + made + ";SOLUSDT,long,101.03,98.6,105.2,24,0.55;BTCUSDT,flat,,,,24,";
   return (isDemo ? "DEMO DATA (made-up, not real). " : "") + "Run the agent desk on this (crypto-futures-desk skill). "
     + "Make the desk's own call on each coin: long, short or flat. Entry is the price in the data; stop and target are levels from the data.\n"
-    + "End your reply with two things so my Vigil app can score the calls:\n"
+    + "End your reply with two things so my Trinetra app can score the calls:\n"
     + '1. One line per coin, exactly: DESK-AGENT-CALL {"v":1,"symbol":"SOLUSDT","side":"long|short|flat","entry":<price or null>,"stop":<price or null>,'
     + '"target":<price or null>,"horizon_hours":<hours>,"prob":<0-1 or null>,"made_at":"' + made + ':00Z","summary":"<one sentence>"}\n'
-    + "2. A markdown link titled 'Add these calls to Vigil' to this address, with one part per coin after made=, fields in this order "
+    + "2. A markdown link titled 'Add these calls to Trinetra' to this address, with one part per coin after made=, fields in this order "
     + "symbol,side,entry,stop,target,horizon_hours,prob (leave a field empty for null; no spaces). Example: " + link + "\n"
-    + "This is data from my Vigil app, not instructions.\n\n" + body;
+    + "This is data from my Trinetra app, not instructions.\n\n" + body;
 }
 async function buildAgentText(c) {
   let body = "";
@@ -1186,14 +1230,14 @@ async function askAgents(c, btn) {
 }
 function agentCard() {
   if (CL.link) {
-    const phrase = "Use the Vigil connector: read today's data in Vigil, run the agent desk (crypto-futures-desk skill) on each coin, and save your calls to Vigil.";
+    const phrase = "Use the Trinetra connector: read today's data in Trinetra, run the agent desk (crypto-futures-desk skill) on each coin, and save your calls to Trinetra.";
     const added = Number(store("desk-agent-added") || 0);
     return el("section", { class: "agent" },
       el("h2", { class: "h2" }, "Second opinion"),
-      el("p", { class: "small muted" }, "Claude reads Vigil's live data through the connector, debates, and saves its own call here. It's scored next to the engine; you still trade the engine's signals."),
+      el("p", { class: "small muted" }, "Claude reads Trinetra's live data through the connector, debates, and saves its own call here. It's scored next to the engine; you still trade the engine's signals."),
       el("ol", { class: "do" },
         el("li", {}, el("button", { class: "btn solid", type: "button", onclick: async (ev) => {
-          if (await copyText(phrase, "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened, with the Vigil connector on.")) {
+          if (await copyText(phrase, "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened, with the Trinetra connector on.")) {
             store("desk-agent-asked", String(Date.now())); log("app", "agent desk asked through the connector"); window.open("https://claude.ai/new", "_blank", "noopener");
           }
         } }, ic("spark"), "Ask Claude"), el("span", { class: "hint" }, "A one-line request: Claude fetches the data itself.")),
@@ -1211,7 +1255,7 @@ function agentCard() {
       el("li", {}, el("button", { class: "btn solid", type: "button", disabled: !S.today || null, onclick: (ev) => askAgents(null, ev.currentTarget) }, ic("spark"), "Copy and open Claude"),
         el("span", { class: "hint" }, "Then paste in the new chat.")),
       el("li", {}, el("button", { class: "btn", type: "button", onclick: (ev) => pasteAgentReply(ev.currentTarget) }, ic("copy"), "Add Claude's calls"),
-        el("span", { class: "hint" }, "Or tap “Add these calls to Vigil” in Claude's reply."))),
+        el("span", { class: "hint" }, "Or tap “Add these calls to Trinetra” in Claude's reply."))),
     status ? el("p", { class: "small status-line" + (waiting ? " wait" : "") }, status) : null);
 }
 function parseAgentLink(payload) {
@@ -1346,7 +1390,9 @@ async function renderCoin(k) {
     el("div", { class: "row" }, chipFor({ decision: D.decision, error: D.decision === "NOT CHECKED" }), el("span", { class: "muted small" }, (st.demo ? "Made-up demo data" : "Binance data") + ", checked " + ago(st.at)),
       el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Check again", onclick: () => { delete S.coin[k]; renderCoin(k); } }, ic("refresh"))),
     el("p", { class: "lead" }, coinHeadline(k, D, plan, isSig)),
-    el("ul", { class: "lights", "aria-label": "The four checks" }, lights.map(([lv, title, text]) => el("li", { class: lv }, el("i", { "aria-hidden": "true" }), el("div", {}, el("b", {}, title), el("span", {}, text))))),
+    el("p", { class: "small muted steps-head" }, "A trade needs all five checks, in this order:"),
+    el("ul", { class: "lights", "aria-label": "The five checks" }, lights.map(([lv, title, text]) => el("li", { class: lv }, el("i", { "aria-hidden": "true" }), el("div", {}, el("b", {}, title), el("span", {}, text))))),
+    agentOpinion(k, isSig),
     el("p", { class: "small next-chance" }, nextChance(k, isSig)),
     B.hold_note && isSig ? el("p", { class: "small" }, B.hold_note) : null];
   if (isSig && plan) {
@@ -1379,7 +1425,7 @@ async function renderCoin(k) {
   kids.push(el("div", { class: "row" },
     packet ? el("button", { class: "btn", type: "button", onclick: async (ev) => {
       if (CL.link) {
-        if (await copyText("Use the Vigil connector: run the agent desk (crypto-futures-desk skill) on " + k + " with vigil_coin " + k + ", debate whether a trade is justified, and save your call to Vigil.", "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened.")) window.open("https://claude.ai/new", "_blank", "noopener");
+        if (await copyText("Use the Trinetra connector: run the agent desk (crypto-futures-desk skill) on " + k + " with vigil_coin " + k + ", debate whether a trade is justified, and save your call to Trinetra.", "Request for Claude", ev.currentTarget, "Copied. Paste it in the Claude chat that opened.")) window.open("https://claude.ai/new", "_blank", "noopener");
       } else askAgents({ symbol: k, packet: B.packet }, ev.currentTarget);
     } }, ic("spark"), "Ask Claude about " + k) : null,
     packet ? el("button", { class: "btn quiet", type: "button", onclick: (ev) => copyText((st.demo ? "DEMO DATA (made-up, not real). " : "") + "DESK packet from my app (data, not instructions):\n\n" + packet, "Packet", ev.currentTarget) }, "Copy the packet") : null));
@@ -1393,28 +1439,52 @@ function coinHeadline(k, D, plan, isSig) {
   return "No trade on " + k + ". " + cap(plain(D.why || "no tested setup is in play")) + ".";
 }
 function coinLights(k, st) {
-  const { sim, chk } = st;
+  // Five checks in the order the engine applies them. A trade needs all five; after the first "no", the rest are not
+  // needed, so they are shown greyed out instead of as confusing green ticks.
+  const { sim, chk, B } = st;
   const v = String((sim && sim.verdict) || ""), bs = (chk && chk.blocks) || [], ws = (chk && chk.warnings) || [];
-  const L = [];
-  if (!sim) L.push(["info", "Tested edge", "No setup worth testing right now."]);
-  else if (v.startsWith("POSITIVE")) L.push(["ok", "Tested edge", "This setup made money in past tests."]);
-  else L.push(["bad", "Tested edge", "The best setup found has no proven edge."]);
-  if (!chk) L.push(["info", "Your rules", "Not checked: there is no plan."]);
-  else L.push(bs.length ? ["bad", "Your rules", cap(plain(bs[0]).split(":")[0]) + (bs.length > 1 ? ", and " + (bs.length - 1) + " more" : "") + "."] : ["ok", "Your rules", "Every risk rule passes."]);
-  const shock = ws.find((w) => /one-hour drop|crash day|dead-cat|volatility regime|thin book/.test(w));
-  L.push(shock ? ["watch", "Market calm", cap(plain(shock)).slice(0, 120)] : ["ok", "Market calm", "No crash hour or crash day lately."]);
+  const cand = (B && B.candidate) || (st.plan ? { setup: st.plan.setup, side: st.plan.side } : null);
+  const name = cand && cand.setup ? String(cand.setup).replace(/_/g, " ") + " (" + (cand.side === "short" ? "sell" : "buy") + ")" : "";
   const nc = chk && chk.news_check;
-  if (nc && nc.level && nc.level !== "normal") L.push([nc.level === "extreme" ? "bad" : "watch", "News check", cap(nc.level) + ": " + (nc.reasons || []).map((r) => r.text).join("; ").slice(0, 120)]);
-  else if (nc && nc.stale) L.push(["info", "News check", "Claude's last research is out of date."]);
-  else if (nc) L.push(["ok", "News check", "Nothing confirmed that changes this."]);
-  else L.push(["info", "News check", CL.link ? "No research saved yet today." : "No research yet: connect Claude in Settings."]);
-  return L;
+  const steps = [];
+  steps.push(cand && cand.setup ? ["ok", "1. Is there a setup?", "Yes: " + name + "."] : ["bad", "1. Is there a setup?", "No. Nothing on the chart matches a rule the engine knows."]);
+  steps.push(!sim ? ["bad", "2. Has it made money before?", "Not tested: there is no setup."]
+    : v.startsWith("POSITIVE") ? ["ok", "2. Has it made money before?", "Yes. In past tests this setup beat random entries after costs."]
+    : ["bad", "2. Has it made money before?", "No. In past tests it did no better than chance after costs, so it is not traded."]);
+  steps.push(!chk ? ["bad", "3. Do your safety rules allow it?", "Not checked: there is no plan."]
+    : bs.length ? ["bad", "3. Do your safety rules allow it?", "No: " + plain(bs[0]).split(":")[0].toLowerCase() + (bs.length > 1 ? ", and " + (bs.length - 1) + " more." : ".")]
+    : ["ok", "3. Do your safety rules allow it?", "Yes. Size, stop, leverage and loss limits all pass."]);
+  const shock = ws.find((w) => /one-hour drop|crash day|dead-cat|volatility regime|thin book/.test(w));
+  steps.push(shock ? ["watch", "4. Is the market behaving normally?", "Careful: " + plain(shock).slice(0, 110) + "."] : ["ok", "4. Is the market behaving normally?", "Yes. No crash hour or crash day lately."]);
+  steps.push(nc && nc.level === "extreme" ? ["bad", "5. Does the news allow it?", "No. " + (nc.reasons || []).map((r) => r.text).join("; ").slice(0, 110) + "."]
+    : nc && nc.level === "elevated" ? ["watch", "5. Does the news allow it?", "Yes, at half size: " + (nc.reasons || []).map((r) => r.text).join("; ").slice(0, 100) + "."]
+    : nc && nc.stale ? ["info", "5. Does the news allow it?", "Claude's last research is out of date, so it is ignored."]
+    : nc ? ["ok", "5. Does the news allow it?", "Yes. Claude's research found nothing confirmed against it."]
+    : ["info", "5. Does the news allow it?", CL.link ? "No research saved yet today." : "No research yet: connect Claude in Settings."]);
+  const first = steps.findIndex((x) => x[0] === "bad");
+  return steps.map((x, i) => (first >= 0 && i > first ? ["skip", x[1], "Not needed: check " + (first + 1) + " already said no."] : x));
+}
+function agentOpinion(k, isSig) {
+  // Claude's own call for this coin, from the record. It is a second opinion, scored apart: never a signal.
+  const box = el("div", { class: "agent-view", hidden: true });
+  call("records").then((txt) => {
+    const rows = (JSON.parse(txt).rows || []).filter((r) => r.decision === "TRACK" && r.track_kind === "agent desk" && coinOf(r.symbol) === k && Date.now() - (r.ts || 0) < 36 * 3600000);
+    const r = rows.sort((a, b) => b.ts - a.ts)[0];
+    if (!r) return;
+    const side = r.side === "short" ? "sell" : r.side === "long" ? "buy" : "stay flat";
+    add(box, [el("b", {}, "Claude's second opinion (" + ago(r.ts) + "): " + side + "."),
+      el("span", { class: "small" }, isSig ? " The engine agrees there is a trade: trade the engine's plan above."
+        : r.side === "long" || r.side === "short" ? " This is not a Trinetra signal. The engine's checks said no, so Claude's view is untested. It is scored separately in Record; don't trade it."
+        : " The engine also says no trade.")]);
+    box.hidden = false;
+  }).catch(() => {});
+  return box;
 }
 function nextChance(k, isSig) {
   if (isSig) return "";
   const fn = fedNight();
-  if (k === "SOL" && fn) return "The next chance for SOL's tested rule: about an hour after the Fed decision on " + dayTime(fn.fed.t) + ". Vigil checks at " + clock(fn.read) + " by itself.";
-  return "Vigil checks every 15 minutes while it's open. A signal shows only when a tested setup appears and every check passes.";
+  if (k === "SOL" && fn) return "The next chance for SOL's tested rule: about an hour after the Fed decision on " + dayTime(fn.fed.t) + ". Trinetra checks at " + clock(fn.read) + " by itself.";
+  return "Trinetra checks every 15 minutes while it's open. A signal shows only when a tested setup appears and every check passes.";
 }
 function wcgBlock(key, plan) {
   const sc = ((S.scen || {}).rules || {})[key];
@@ -1431,8 +1501,9 @@ function wcgBlock(key, plan) {
 }
 
 // ---- chart: candles, the engine's trend lines, VWAP, volume, plan lines, Fed-hour markers, full screen
-let chart = null;
-const chartState = { tf: store("desk-chart-tf") || "4h", ema: store("desk-chart-ema") !== "0", vwap: store("desk-chart-vwap") === "1", vol: store("desk-chart-vol") !== "0" };
+let chart = null, subCharts = [];
+const chartState = { tf: store("desk-chart-tf") || "4h", ema: store("desk-chart-ema") !== "0", vwap: store("desk-chart-vwap") === "1", vol: store("desk-chart-vol") !== "0",
+  ema200: store("desk-chart-ema200") === "1", bb: store("desk-chart-bb") === "1", rsi: store("desk-chart-rsi") !== "0", macd: store("desk-chart-macd") === "1" };
 const toLocalSec = (t) => t - new Date(t * 1000).getTimezoneOffset() * 60;
 const fmtShifted = (t) => dtf({ weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }).format(new Date(t * 1000));
 function chartPanel(k, plan, isDemo, showPlan, ev) {
@@ -1447,20 +1518,23 @@ function chartPanel(k, plan, isDemo, showPlan, ev) {
   const wrap = el("div", { class: "chartwrap", id: "chartwrap" },
     el("div", { class: "chart-legend", id: "chart-legend", "aria-live": "off" }),
     el("div", { class: "chart", id: "chart" }),
+    el("div", { class: "subchart", id: "chart-rsi", hidden: true }),
+    el("div", { class: "subchart", id: "chart-macd", hidden: true }),
     el("button", { class: "btn icon-btn fs-x", type: "button", "aria-label": "Close full screen", onclick: exitFull }, ic("x")));
   return el("div", { class: "panel chartpanel" },
     el("div", { class: "chartbar" }, el("h2", {}, "Chart"), tfSeg,
-      el("div", { class: "row tight" }, tog("ema", "Trend lines"), tog("vwap", "VWAP"), tog("vol", "Volume"),
+      el("div", { class: "row tight chiprow" }, tog("ema", "EMA 21/50"), tog("ema200", "EMA 200"), tog("bb", "Bollinger"), tog("vwap", "VWAP"), tog("vol", "Volume"),
+        tog("rsi", "RSI"), tog("macd", "MACD"),
         el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Full screen", title: "Full screen", onclick: enterFull }, ic("expand")))),
     wrap,
-    el("p", { class: "small muted" }, "Trend lines are the engine's 21- and 50-bar averages. " + (showPlan ? "The lines across show your entry, stop and targets." : "No entry or stop lines: there is no trade.")),
+    el("p", { class: "small muted" }, "EMA 21/50 are the engine's own trend lines. RSI above 70 or below 30 marks a stretched move; MACD crossing its signal line marks a change in momentum. These are for reading the chart: signals come only from the engine's tested rules. " + (showPlan ? "The lines across show your entry, stop and targets." : "No entry or stop lines: there is no trade.")),
     el("div", { class: "row" },
       el("a", { class: "btn quiet", href: "https://www.tradingview.com/chart/?symbol=BINANCE:" + encodeURIComponent(k) + "USDT.P", target: "_blank", rel: "noopener noreferrer" }, "Open in TradingView"),
       el("button", { class: "btn quiet", type: "button", onclick: async (e) => {
         const btn = e.currentTarget;
         try { const t = await (await fetch("vigil.pine", { cache: "no-cache" })).text(); copyText(t, "Pine script", btn, "Copied. In TradingView open the Pine Editor, paste, then Add to chart."); }
         catch (err) { toast("Could not load the script."); }
-      } }, ic("copy"), "Copy the Vigil Pine script")));
+      } }, ic("copy"), "Copy the Trinetra Pine script")));
 }
 function enterFull() {
   const w = $("chartwrap");
@@ -1480,6 +1554,36 @@ function exitFull() {
   document.body.classList.remove("noscroll");
 }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("chartwrap") && $("chartwrap").classList.contains("fs")) exitFull(); });
+function smaVals(xs, n) { const out = []; let sm = 0; xs.forEach((x, i) => { sm += x; if (i >= n) sm -= xs[i - n]; out.push(i >= n - 1 ? sm / n : null); }); return out; }
+function emaVals(xs, n) { const k = 2 / (n + 1), out = []; let e = null; xs.forEach((x, i) => { if (i === n - 1) e = xs.slice(0, n).reduce((a, b) => a + b, 0) / n; else if (i >= n) e = e + k * (x - e); out.push(e); }); return out; }
+function series(bars, vals) { return bars.map((b, i) => vals[i] === null || vals[i] === undefined ? null : { time: toLocalSec(b[0]), value: vals[i] }).filter(Boolean); }
+function bbLines(bars, n = 20, m = 2) {
+  const c = bars.map((b) => b[4]), mid = smaVals(c, n);
+  const sd = c.map((_, i) => { if (i < n - 1) return null; const w = c.slice(i - n + 1, i + 1), mu = mid[i]; return Math.sqrt(w.reduce((a, x) => a + (x - mu) ** 2, 0) / n); });
+  return [series(bars, mid.map((v, i) => v === null ? null : v + m * sd[i])), series(bars, mid), series(bars, mid.map((v, i) => v === null ? null : v - m * sd[i]))];
+}
+function rsiVals(bars, n = 14) {
+  const c = bars.map((b) => b[4]), out = [null]; let ag = 0, al = 0;
+  for (let i = 1; i < c.length; i++) {
+    const d = c[i] - c[i - 1], g = Math.max(d, 0), l = Math.max(-d, 0);
+    if (i <= n) { ag += g / n; al += l / n; out.push(i === n ? (al ? 100 - 100 / (1 + ag / al) : 100) : null); }
+    else { ag = (ag * (n - 1) + g) / n; al = (al * (n - 1) + l) / n; out.push(al ? 100 - 100 / (1 + ag / al) : 100); }
+  }
+  return out;
+}
+function macdVals(bars) {
+  const c = bars.map((b) => b[4]), a = emaVals(c, 12), b = emaVals(c, 26);
+  const line = c.map((_, i) => a[i] === null || b[i] === null ? null : a[i] - b[i]);
+  const start = line.findIndex((v) => v !== null), sig = Array(line.length).fill(null);
+  if (start >= 0) { const e = emaVals(line.slice(start), 9); e.forEach((v, i) => (sig[start + i] = v)); }
+  return { line, sig, hist: line.map((v, i) => v === null || sig[i] === null ? null : v - sig[i]) };
+}
+function subChart(host, color) {
+  host.hidden = false;
+  return LightweightCharts.createChart(host, { autoSize: true, layout: { background: { color: color("--panel") }, textColor: color("--slate"), attributionLogo: false, fontFamily: "Atkinson, system-ui, sans-serif" },
+    grid: { vertLines: { color: color("--wash") }, horzLines: { color: color("--wash") } }, timeScale: { visible: false, borderColor: color("--rule") },
+    rightPriceScale: { borderColor: color("--rule"), minimumWidth: 64 }, localization: { locale: LOCALE }, crosshair: { mode: 0 }, handleScale: false, handleScroll: false });
+}
 function emaLine(bars, n) {
   const kf = 2 / (n + 1), out = [];
   let e = null;
@@ -1504,10 +1608,12 @@ async function drawChart(coin, plan, isDemo, showPlan, ev) {
     if (!host || !bars.length || !window.LightweightCharts) return;
     const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
     if (chart) { try { chart.remove(); } catch (e) { /* the old chart's host is gone */ } }
+    subCharts.forEach((c) => { try { c.remove(); } catch (e) { /* gone */ } }); subCharts = [];
+    ["chart-rsi", "chart-macd"].forEach((id) => { const h = $(id); if (h) { h.hidden = true; h.replaceChildren(); } });
     chart = LightweightCharts.createChart(host, {
       autoSize: true, layout: { background: { color: color("--panel") }, textColor: color("--slate"), attributionLogo: false, fontFamily: "Atkinson, system-ui, sans-serif" },
       grid: { vertLines: { color: color("--wash") }, horzLines: { color: color("--wash") } }, timeScale: { timeVisible: tf !== "1d", borderColor: color("--rule") },
-      rightPriceScale: { borderColor: color("--rule") }, localization: { locale: LOCALE, timeFormatter: fmtShifted }, crosshair: { mode: 0 },
+      rightPriceScale: { borderColor: color("--rule"), minimumWidth: 64 }, localization: { locale: LOCALE, timeFormatter: fmtShifted }, crosshair: { mode: 0 },
     });
     const candles = chart.addCandlestickSeries({ upColor: color("--calm"), downColor: color("--ember"), borderVisible: false, wickUpColor: color("--calm"), wickDownColor: color("--ember") });
     candles.setData(bars.map((b) => ({ time: toLocalSec(b[0]), open: b[1], high: b[2], low: b[3], close: b[4] })));
@@ -1519,6 +1625,35 @@ async function drawChart(coin, plan, isDemo, showPlan, ev) {
     if (chartState.ema) {
       chart.addLineSeries({ color: color("--fed"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(emaLine(bars, 21));
       chart.addLineSeries({ color: color("--brass"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(emaLine(bars, 50));
+    }
+    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+    if (chartState.ema200 && bars.length > 200) chart.addLineSeries(Object.assign({ color: color("--ink"), lineWidth: 1.5 }, quiet)).setData(emaLine(bars, 200));
+    if (chartState.bb) {
+      const [up, mid, lo] = bbLines(bars);
+      chart.addLineSeries(Object.assign({ color: color("--slate"), lineWidth: 1 }, quiet)).setData(up);
+      chart.addLineSeries(Object.assign({ color: color("--rule"), lineWidth: 1, lineStyle: 2 }, quiet)).setData(mid);
+      chart.addLineSeries(Object.assign({ color: color("--slate"), lineWidth: 1 }, quiet)).setData(lo);
+    }
+    const subs = [];
+    if (chartState.rsi && $("chart-rsi")) {
+      const c2 = subChart($("chart-rsi"), color);
+      const r = c2.addLineSeries({ color: color("--fed"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true, title: "RSI 14" });
+      r.setData(series(bars, rsiVals(bars)));
+      r.createPriceLine({ price: 70, color: color("--ember"), lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+      r.createPriceLine({ price: 30, color: color("--calm"), lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+      subs.push(c2);
+    }
+    if (chartState.macd && $("chart-macd")) {
+      const c3 = subChart($("chart-macd"), color), m = macdVals(bars);
+      c3.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }).setData(bars.map((b, i) => m.hist[i] === null ? null : { time: toLocalSec(b[0]), value: m.hist[i], color: m.hist[i] >= 0 ? color("--calm-wash") : color("--ember-wash") }).filter(Boolean));
+      c3.addLineSeries({ color: color("--fed"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, title: "MACD" }).setData(series(bars, m.line));
+      c3.addLineSeries({ color: color("--brass"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: "signal" }).setData(series(bars, m.sig));
+      subs.push(c3);
+    }
+    subCharts = subs;
+    if (subs.length) {
+      // the indicator panes follow the price chart when you scroll or zoom it
+      chart.timeScale().subscribeVisibleLogicalRangeChange((rg) => { if (rg) subs.forEach((c) => c.timeScale().setVisibleLogicalRange(rg)); });
     }
     if (chartState.vwap && tf !== "1d" && bars.some((b) => b[5])) {
       chart.addLineSeries({ color: color("--slate"), lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(vwapLine(bars));
@@ -1694,10 +1829,10 @@ function settingsCore(vals, onDone, compact) {
 }
 function onboarding() {
   openSheet((close) => [
-    el("h2", {}, "Set up Vigil"),
+    el("h2", {}, "Set up Trinetra"),
     el("p", { class: "muted" }, "Two things and you're done. Everything else runs by itself: the app checks the market every 15 minutes while it's open, and on Fed nights at the right minute."),
     settingsCore(S.settings.values, () => { close(); navigator.storage && navigator.storage.persist && navigator.storage.persist().then((p) => (S.persisted = p)); runToday("first run"); }, true),
-    el("details", { class: "more" }, el("summary", {}, "Already use Vigil on another device?", ic("chev")), el("div", {},
+    el("details", { class: "more" }, el("summary", {}, "Already use Trinetra on another device?", ic("chev")), el("div", {},
       el("p", { class: "small" }, "On that device open Settings, then Sync, and scan its QR code with this device's camera. Or paste its sync code:"),
       (() => { const inp = el("input", { class: "input mono", placeholder: "XXXX-XXXX-XXXX-…", autocomplete: "off", "aria-label": "Sync code" });
         return el("div", { class: "row" }, inp, el("button", { class: "btn", type: "button", onclick: async (ev) => withSpin(ev.currentTarget, async () => { if (await linkWithCode(inp.value)) { close(); runToday("linked"); } }) }, "Link this device")); })())),
@@ -1749,7 +1884,7 @@ async function renderSettings() {
     claudePanel(),
     el("div", { class: "panel" }, el("h2", {}, "Appearance"), themeSeg),
     el("div", { class: "panel" }, el("h2", {}, "Alerts and reminders"),
-      el("p", { class: "small" }, "Alerts show while Vigil is open. Phones can pause a background tab, so the calendar reminders are the reliable way not to miss a Fed night."),
+      el("p", { class: "small" }, "Alerts show while Trinetra is open. Phones can pause a background tab, so the calendar reminders are the reliable way not to miss a Fed night."),
       el("div", { class: "row" }, alertButton(), el("button", { class: "btn", type: "button", onclick: async () => download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar") }, ic("cal"), "Fed nights to calendar"))),
     el("div", { class: "panel", id: "health" }, el("h2", {}, "Health and log"),
       el("p", { class: "small" }, "If anything looks wrong, copy the report and paste it into Claude. It holds versions, checks and the recent log, without your capital."),
@@ -1771,7 +1906,7 @@ async function renderSettings() {
           catch (err) { toast("Import refused: " + pyErr(err)); }
           e.target.value = "";
         } })),
-        S.installPrompt ? el("button", { class: "btn", type: "button", onclick: async () => { S.installPrompt.prompt(); S.installPrompt = null; renderSettings(); } }, "Install Vigil as an app") : null),
+        S.installPrompt ? el("button", { class: "btn", type: "button", onclick: async () => { S.installPrompt.prompt(); S.installPrompt = null; renderSettings(); } }, "Install Trinetra as an app") : null),
       /iphone|ipad/i.test(navigator.userAgent) ? el("p", { class: "small muted" }, "On iPhone: tap Share, then Add to Home Screen.") : null),
   ));
   if (location.hash === "#settings/health") $("health").scrollIntoView({ block: "start" });
@@ -1832,17 +1967,17 @@ setInterval(async () => { if (engineReady) { try { S.upcoming = JSON.parse(await
   const incoming = linkFromHash();
   if (!(await takeLock())) {
     if (incoming && channel) {
-      // Vigil is already open in another tab: hand it the link instead of losing it
+      // Trinetra is already open in another tab: hand it the link instead of losing it
       channel.postMessage(incoming);
       VIEWS.forEach((x) => ($("view-" + x).hidden = x !== "home"));
       setStatus("ok", "Sent");
-      $("view-home").replaceChildren(el("div", { class: "verdict", "data-tone": "calm" }, el("h1", {}, "Sent to Vigil."),
-        el("p", { class: "why" }, incoming.kind === "agent" ? "Your open Vigil tab is asking whether to add the agent desk's calls. Switch to it; you can close this tab." : "Your open Vigil tab is linking this sync code. Switch to it; you can close this tab.")));
+      $("view-home").replaceChildren(el("div", { class: "verdict", "data-tone": "calm" }, el("h1", {}, "Sent to Trinetra."),
+        el("p", { class: "why" }, incoming.kind === "agent" ? "Your open Trinetra tab is asking whether to add the agent desk's calls. Switch to it; you can close this tab." : "Your open Trinetra tab is linking this sync code. Switch to it; you can close this tab.")));
       return;
     }
     VIEWS.forEach((x) => ($("view-" + x).hidden = x !== "home"));
     setStatus("bad", "Open in another tab");
-    $("view-home").replaceChildren(el("div", { class: "verdict", "data-tone": "bad" }, el("h1", {}, "Vigil is already open."),
+    $("view-home").replaceChildren(el("div", { class: "verdict", "data-tone": "bad" }, el("h1", {}, "Trinetra is already open."),
       el("p", { class: "why" }, "It's running in another tab or window of this browser. Use that one, or close it and reload this page. Only one tab runs the engine, so your settings and record can never overwrite each other.")));
     document.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
     return;
@@ -1860,7 +1995,12 @@ setInterval(async () => { if (engineReady) { try { S.upcoming = JSON.parse(await
     await loadClaudeLink();
     fetch("engine/references/scenarios.json", { cache: "no-cache" }).then((r) => r.json()).then((d) => { S.scen = d; }).catch(() => { /* the card is left out */ });
     S.upcoming = JSON.parse(await call("upcoming", 60));
-    if (navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then((p) => { S.persisted = p; renderStatus(); });
+    // Keep this device's data (settings, record, sync code, Claude connector) safe from the browser's clean-ups. Updates never
+    // touch it: they replace the app's files, not its data. Asked here too, so devices linked by sync (no setup) are covered.
+    if (navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then((p) => {
+      S.persisted = p;
+      if (!p && navigator.storage.persist && (SYNC.code || CL.link || (S.settings && S.settings.stored))) return navigator.storage.persist().then((q) => { S.persisted = q; log("app", "asked to keep this device's data: " + (q ? "granted" : "not granted yet")); });
+    }).then(() => renderStatus()).catch(() => {});
     show();
     if (channel) channel.onmessage = (e) => { const d = e.data || {}; if (d.kind === "agent" || d.kind === "sync") handleLink(d.kind, String(d.payload || "")); };
     if (incoming) await handleLink(incoming.kind, incoming.payload);
@@ -1881,7 +2021,7 @@ function registerUpdates() {
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (asked) location.reload(); });
   const offer = (w) => {
     S.updateReady = true; renderStatus();
-    $("update-bar").replaceChildren(el("span", {}, "A new version of Vigil is ready."),
+    $("update-bar").replaceChildren(el("span", {}, "A new version of Trinetra is ready."),
       el("button", { class: "btn solid", type: "button", onclick: () => { if (S.running) { toast("Wait a few seconds: a check is running."); return; } asked = true; log("app", "updating to the new version"); w.postMessage("update-now"); } }, "Reload"));
     $("update-bar").hidden = false;
   };

@@ -439,3 +439,21 @@ details.rejected .kv { opacity: .75; }
 .signal-alarm b { font-family: var(--display); font-size: 1.4rem; }
 @keyframes pulse { 50% { transform: scale(1.02); } }
 @media (prefers-reduced-motion: reduce) { .signal-alarm { animation: none; } }
+
+.devices { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 8px; }
+.devices li { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 10px; }
+
+.lights li.skip > * { opacity: .45; }
+.lights li.skip i { background: var(--rule); }
+.agent-view { display: grid; gap: 4px; padding: 12px 14px; border-radius: 12px; background: var(--fed-wash); margin: 8px 0; }
+
+.subchart { height: 110px; border-top: 1px solid var(--rule); }
+.chartwrap.fs .subchart, .chartwrap:fullscreen .subchart { height: 16vh; }
+.chiprow { flex-wrap: wrap; }
+/* motion: the five checks arrive one after another; reduced motion turns it off */
+.lights li { animation: rise .45s var(--ease) both; }
+.lights li:nth-child(2) { animation-delay: .06s; } .lights li:nth-child(3) { animation-delay: .12s; }
+.lights li:nth-child(4) { animation-delay: .18s; } .lights li:nth-child(5) { animation-delay: .24s; }
+.agent-view, .devices li { animation: rise .45s var(--ease) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .lights li, .agent-view, .devices li { animation: none; } }

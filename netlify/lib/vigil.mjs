@@ -1,5 +1,5 @@
 // Shared by the Claude connector (mcp.mjs) and the app's feed/inbox endpoints (claude.mjs).
-// One connector token links your Vigil app and your Claude account. The server stores the app's latest data and
+// One connector token links your Trinetra app and your Claude account. The server stores the app's latest data and
 // Claude's notes for the app encrypted at rest with a key made from that token, under a one-way hash of it, so the
 // stored blobs are unreadable without the token. (The token itself reaches the server on each request, by design.)
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
@@ -48,7 +48,7 @@ export async function readFeed(store, token) {
 export async function addInbox(store, token, item) {
   const id = spaceId(token);
   const have = await store.list({ prefix: "inbox/" + id + "/" });
-  if ((have.blobs || []).length >= MAX_INBOX) return { ok: false, error: "Vigil's inbox is full: open Vigil so it collects what is waiting" };
+  if ((have.blobs || []).length >= MAX_INBOX) return { ok: false, error: "Trinetra's inbox is full: open Trinetra so it collects what is waiting" };
   const key = "inbox/" + id + "/" + Date.now().toString(36) + "-" + randomBytes(4).toString("hex");
   await store.set(key, seal(token, { at: Date.now(), ...item }));
   return { ok: true, key };
