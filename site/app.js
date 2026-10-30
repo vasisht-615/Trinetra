@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.2-345a11bfbb3b";
+const BUILD = "1.3.2-05c7ef12dfec";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -1373,9 +1373,14 @@ function newsCheckCard() {
     reasons.length ? el("ul", { class: "list small" }, reasons.slice(0, 5).map(([k, r]) => el("li", {}, el("b", {}, k + ": "), r.text + " ",
       (r.sources || []).slice(0, 2).map((u, i) => [safeLink(u, i ? "source 2" : "source"), " "])))) : null,
     el("p", { class: "small muted" }, (n.source || "Research") + ", " + ago(n.made_at) + "." + effect + " News can pause or shrink a trade, never create one."),
-    lvl === "extreme" || lvl === "elevated" ? el("button", { class: "btn quiet", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
-      await call("news_clear"); log("news", "news check removed by hand"); syncSoon(); toast("News check removed."); runToday("news check removed");
-    }) }, "Ignore this check") : null);
+    lvl === "extreme" || lvl === "elevated" ? el("p", { class: "small muted" }, "You don't need to remove it to see signals: a tested rule it pauses still shows here as \"paused\", with what it would do.") : null,
+    lvl === "extreme" || lvl === "elevated" ? el("button", { class: "btn quiet", type: "button", onclick: (ev) => {
+      // removing it lets new trades through on every synced device until the next research run, so ask first
+      if (!window.confirm("Remove this news check on all your devices? New trades are no longer " + (lvl === "extreme" ? "blocked" : "halved") + " until Claude's next research run.")) return;
+      withSpin(ev.currentTarget, async () => {
+        await call("news_clear"); log("news", "news check removed by hand"); syncSoon(); toast("News check removed."); runToday("news check removed");
+      });
+    } }, "Ignore this check") : null);
 }
 function newsBlock() {
   const T = S.today;

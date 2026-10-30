@@ -684,7 +684,10 @@ def get_klines_bybit(net, sym, tf, bars=500, end_ms=None):
         for r in rows:
             try:
                 t = int(r[0])
-                page.append({"t": t, "o": float(r[1]), "h": float(r[2]), "l": float(r[3]), "c": float(r[4]),
+                o, h, l_, c = float(r[1]), float(r[2]), float(r[3]), float(r[4])
+                if min(o, h, l_, c) <= 0 or h < l_:
+                    continue                                    # a broken bar (as in parse_binance_klines): never a price
+                page.append({"t": t, "o": o, "h": h, "l": l_, "c": c,
                              "v": float(r[5]), "T": t + tfm - 1, "qv": float(r[6]), "n": 0, "tbv": None})
             except (TypeError, ValueError, IndexError):
                 continue
@@ -1080,8 +1083,8 @@ def get_depth(net, sym, limit=100):
     d = net.json(bn_url("/fapi/v1/depth", symbol=sym, limit=limit), ttl=5)
     if not isinstance(d, dict):
         raise DeskError("Binance depth: bad reply")
-    bids = [(float(p), float(q)) for p, q in d.get("bids", [])]
-    asks = [(float(p), float(q)) for p, q in d.get("asks", [])]
+    bids = [(float(p), float(q)) for p, q in d.get("bids", []) if float(p) > 0 and float(q) > 0]     # a broken level is no depth
+    asks = [(float(p), float(q)) for p, q in d.get("asks", []) if float(p) > 0 and float(q) > 0]
     return bids, asks
 
 
@@ -1246,6 +1249,17 @@ def release_confirmed(E, rd=None, net=None, tol_min=10):
     t, kind = E.get("release"), E.get("kind")
     if not isinstance(t, (int, float)) or kind in (None, "", "OTHER"):
         return False
+    # Inside the official schedule's range a main US release must be on it: the news rules were tested on scheduled
+    # releases only, so an unscheduled one (an emergency Fed move) or a wrongly dated feed entry never unlocks them.
+    cal = load_release_calendar() or {}
+    rel = [r for r in cal.get("releases") or [] if isinstance(r.get("t"), (int, float))]
+    if kind in MAIN_KINDS and rel:
+        try:
+            until = int(dt.datetime.fromisoformat(str(cal.get("covers_until"))).replace(tzinfo=dt.timezone.utc).timestamp() * 1000) + DAY_MS
+        except ValueError:
+            until = max(r["t"] for r in rel)
+        if min(r["t"] for r in rel) - DAY_MS <= t <= until:
+            return any(r.get("kind") == kind and abs(r["t"] - t) <= tol_min * 60000 for r in rel)
     evs = []
     sp = os.path.join(rd, "snapshot.json") if rd else None
     if sp and os.path.exists(sp):
@@ -2380,26 +2394,56 @@ def detect_setups(P, Pb, H, Hb, L15=None, deriv=None, levels=None, cfg=None, mac
 SETUP_TRIGGERS = {}
 
 
+def _htf(F, key, i):
+    """The higher timeframe's value at primary bar i (F['htf_trend'] / F['htf_adx'], aligned by cmd_simulate), or None."""
+    arr = F.get(key)
+    return arr[i] if arr is not None and i < len(arr) else None
+
+
 def _trig_pullback(side):
+    # the live rule (detect_setups) also refuses a pullback against the higher timeframe's trend, so its past cases do too
     def f(F, bars, i):
         if i < 3 or F["ema21"][i] is None or F["atr"][i] is None or F["rsi"][i] is None:
             return False
         a, e = F["atr"][i], F["ema21"][i]
         if side == "long":
-            return trend_at(F, i) == "up" and min(F["l"][i - 2:i + 1]) <= e + 0.3 * a and F["c"][i] > e and 38 <= F["rsi"][i] <= 62
-        return trend_at(F, i) == "down" and max(F["h"][i - 2:i + 1]) >= e - 0.3 * a and F["c"][i] < e and 38 <= F["rsi"][i] <= 62
+            return (trend_at(F, i) == "up" and _htf(F, "htf_trend", i) != "down" and min(F["l"][i - 2:i + 1]) <= e + 0.3 * a
+                    and F["c"][i] > e and 38 <= F["rsi"][i] <= 62)
+        return (trend_at(F, i) == "down" and _htf(F, "htf_trend", i) != "up" and max(F["h"][i - 2:i + 1]) >= e - 0.3 * a
+                and F["c"][i] < e and 38 <= F["rsi"][i] <= 62)
     return f
 
 
 def _trig_range(side):
+    # as live: a ranging primary timeframe (ADX < 20) inside a non-trending higher one (ADX < 25), range at least 2 ATR wide
     def f(F, bars, i):
-        if i < 49 or F["adx"][i] is None or F["adx"][i] >= 20:
+        if i < 49 or F["adx"][i] is None or F["adx"][i] >= 20 or not F["atr"][i]:
+            return False
+        hadx = _htf(F, "htf_adx", i)
+        if hadx is not None and hadx >= 25:
             return False
         hi, lo = max(F["h"][i - 48:i]), min(F["l"][i - 48:i])
+        if hi - lo < 2 * F["atr"][i]:
+            return False
         if side == "short":
             return F["h"][i] > hi and F["c"][i] < hi
         return F["l"][i] < lo and F["c"][i] > lo
     return f
+
+
+def align_htf(bars, hbars):
+    """For each primary bar, the higher timeframe's trend and ADX as of its close (the last higher bar closed by then),
+    as the live detector sees them. Returns (trends, adxs) or (None, None)."""
+    if not hbars:
+        return None, None
+    HF = tf_features(hbars)
+    trends, adxs, j = [], [], -1
+    for b in bars:
+        while j + 1 < len(hbars) and hbars[j + 1]["T"] <= b["T"]:
+            j += 1
+        trends.append(trend_at(HF, j) if j >= 0 else None)
+        adxs.append(HF["adx"][j] if j >= 0 else None)
+    return trends, adxs
 
 
 def _trig_squeeze(side):
@@ -3317,14 +3361,31 @@ def run_checks(cfg, plan, snap, rows, macro=None, now=None, venue_price=None, si
     tfs = (snap or {}).get("timeframes") or {}
     prim = tfs.get(cfg["primary_tf"]) or tfs.get("4h") or tfs.get("1h") or {}
     a = prim.get("atr")
+    # A news setup keeps the first target it was tested with (1.5R before costs, about 1.2-1.35R after); its own
+    # tested history, costs included, decides whether it is worth taking, so it has its own, lower floor. Only a plan
+    # the history test matched to a live candidate of a confirmed release gets it; anything else uses the normal floor.
+    ev_ok = bool(is_ev and sim and sim.get("event_match"))
+    # A news rule that passed its own history test is traded exactly as tested. Its test did not use the chart-setup
+    # filters below (stop width in ATR, mid-range, volatility regime); on the 41 SOL Fed nights the last two removed 7
+    # trades that averaged +1.07R (data/gates_on_fed_SOL.json), and the ATR width blocked the tested 2.5% stop whenever the
+    # 4h ATR was under 0.83% (quiet weeks), so for it they are warnings, not blocks. Risk limits still apply in full:
+    # a wider stop only means a smaller position for the same loss at the stop.
+    tested_news = ev_ok and str((sim or {}).get("verdict") or "").startswith("POSITIVE")
+    min_rr = float(cfg.get("event_min_net_rr", 1.0)) if ev_ok else float(cfg["min_net_rr"])
     if not stop:
         blocks.append("no stop: every trade needs a stop placed on the exchange at entry")
     if a:
         d = abs(entry - stop) / a
+        msg = None
         if d < cfg["stop_atr_min"]:
-            blocks.append("stop is %.2f ATR away: inside normal noise (min %.2f)" % (d, cfg["stop_atr_min"]))
+            msg = "stop is %.2f ATR away: inside normal noise (min %.2f)" % (d, cfg["stop_atr_min"])
         if d > cfg["stop_atr_max"]:
-            blocks.append("stop is %.2f ATR away: too wide for a day trade (max %.2f)" % (d, cfg["stop_atr_max"]))
+            msg = "stop is %.2f ATR away: too wide for a day trade (max %.2f)" % (d, cfg["stop_atr_max"])
+        if msg and tested_news:
+            warns.append(msg + "; not applied to this news rule, whose stop comes from the release hour as tested (the size "
+                         "shrinks to keep the same loss at the stop)")
+        elif msg:
+            blocks.append(msg)
     if plan.get("max_loss_pct_equity") is not None and plan["max_loss_pct_equity"] > cfg["risk_per_trade_pct"] * 1.05 + 1e-9:
         blocks.append("max loss %.2f%% of equity is over your %.2f%% per trade" % (plan["max_loss_pct_equity"], cfg["risk_per_trade_pct"]))
     if plan.get("leverage", 1) > cfg["max_leverage"]:
@@ -3332,15 +3393,6 @@ def run_checks(cfg, plan, snap, rows, macro=None, now=None, venue_price=None, si
     if plan.get("liq_to_stop_ratio") is not None and plan["liq_to_stop_ratio"] < cfg["liq_buffer_mult"]:
         blocks.append("liquidation is only %.1fx the stop distance away (need %.1fx)" % (plan["liq_to_stop_ratio"], cfg["liq_buffer_mult"]))
     t1 = (plan.get("targets") or [{}])[0]
-    # A news setup keeps the first target it was tested with (1.5R before costs, about 1.2-1.35R after); its own
-    # tested history, costs included, decides whether it is worth taking, so it has its own, lower floor. Only a plan
-    # the history test matched to a live candidate of a confirmed release gets it; anything else uses the normal floor.
-    ev_ok = bool(is_ev and sim and sim.get("event_match"))
-    # A news rule that passed its own history test is traded exactly as tested. Its test did not use the chart-setup
-    # filters below (mid-range, volatility regime); on the 41 SOL Fed nights those two removed 7 trades that averaged
-    # +1.07R (data/gates_on_fed_SOL.json), so for it they are warnings, not blocks. Risk limits still apply in full.
-    tested_news = ev_ok and str((sim or {}).get("verdict") or "").startswith("POSITIVE")
-    min_rr = float(cfg.get("event_min_net_rr", 1.0)) if ev_ok else float(cfg["min_net_rr"])
     if is_ev and manual:
         blocks.append("news setups need the engine's 1-minute release read and its tested history; chart mode cannot check them")
     if t1.get("net_r") is None:
@@ -3794,11 +3846,12 @@ def recent_moves(c15, c1d):
     rolling one-hour move in the last 4 hours (15-minute closes) and the worst daily close in the last 7 days."""
     out = {}
     if c15 and len(c15) >= 21:
-        r = [c15[k]["c"] / c15[k - 4]["c"] - 1 for k in range(len(c15) - 16, len(c15))]
-        out["worst_1h_pct_last_4h"] = rnd(min(r) * 100, 2)
-        out["best_1h_pct_last_4h"] = rnd(max(r) * 100, 2)
-    if c1d and len(c1d) >= 9:
-        dr = [(c1d[k]["c"] / c1d[k - 1]["c"] - 1, k) for k in range(len(c1d) - 7, len(c1d))]
+        r = [c15[k]["c"] / c15[k - 4]["c"] - 1 for k in range(len(c15) - 16, len(c15)) if c15[k - 4]["c"] > 0]
+        if r:
+            out["worst_1h_pct_last_4h"] = rnd(min(r) * 100, 2)
+            out["best_1h_pct_last_4h"] = rnd(max(r) * 100, 2)
+    dr = [(c1d[k]["c"] / c1d[k - 1]["c"] - 1, k) for k in range(len(c1d) - 7, len(c1d)) if c1d[k - 1]["c"] > 0] if c1d and len(c1d) >= 9 else []
+    if dr:
         w, k = min(dr)
         out["worst_day_pct_last_7d"] = rnd(w * 100, 2)
         out["days_since_worst_day"] = len(c1d) - 1 - k
@@ -4293,6 +4346,17 @@ def cmd_simulate(args, home, cfg):
     except DeskError:
         pass
     trig = SETUP_TRIGGERS.get((setup, side)) if setup else None
+    htf_used = None
+    htf_name = cfg.get("higher_tf", "1d")
+    if trig and not is_event and htf_name in TF_MIN and TF_MIN[htf_name] > TF_MIN[tf]:
+        # the live detector filters these setups by the higher timeframe, so the past cases must be filtered the same way
+        try:
+            need = int(len(bars) * TF_MIN[tf] / TF_MIN[htf_name]) + 260
+            hb, _ = split_closed(get_klines(net, sym, htf_name, need), now)
+            F["htf_trend"], F["htf_adx"] = align_htf(bars, hb)
+            htf_used = htf_name
+        except DeskError:
+            pass
     used, an, s_an = None, None, []
     for keys in (["trend", "pos", "vol"], ["trend", "pos"], ["trend"], []):
         s_an = analog_samples(bars, F, side, stop_atr, target_atr, H, keys, cur, trig, cm, fh, fr, ih,
@@ -4344,8 +4408,9 @@ def cmd_simulate(args, home, cfg):
                 break
         if ev_match is not None and not release_confirmed(E, rd, net):
             ev_match = None
-            verdict = ("INSUFFICIENT HISTORY: this run folder's release (%s, %s, %s) is not a %s release on the calendar or the official "
-                       "schedule, so no news history applies. Read the release the calendar lists ('event COIN' without --time)."
+            verdict = ("INSUFFICIENT HISTORY: this run folder's release (%s, %s, %s) is not a %s release on the official schedule "
+                       "(or, outside its dates, the calendar), so no news history applies: the news rules were tested on scheduled "
+                       "releases only. Read the release the calendar lists ('event COIN' without --time)."
                        % (E.get("name"), E.get("kind"), fmt_time(E.get("release"), cfg["tz_offset_minutes"]), E.get("kind")))
         elif ev_match is None:
             verdict = ("INSUFFICIENT HISTORY: %s is a news-event setup, but this plan does not match a live event candidate in this run "
@@ -4359,7 +4424,7 @@ def cmd_simulate(args, home, cfg):
            "history_from": bars[0]["t"], "history_to": bars[-1]["t"],
            "plan": {"side": side, "entry": entry, "stop": stop, "target": target, "setup": setup, "stop_atr": rnd(stop_atr, 2),
                     "target_atr": rnd(target_atr, 2), "leverage": lev, "liquidation_est": sig(liq)},
-           "current_state": cur, "matched_on": used, "setup_trigger_used": bool(trig),
+           "current_state": cur, "matched_on": used, "setup_trigger_used": bool(trig), "setup_trigger_htf": htf_used,
            "analogs": an, "random_entry_baseline": base, "breakeven_winrate_after_costs": rnd(be_rate, 3),
            "bootstrap": boot, "stress": stress, "verdict": verdict,
            "event_setup": bool(is_event), "event_match": ev_match is not None, "event_expires": (ev_match or {}).get("expires"),
@@ -5155,10 +5220,10 @@ def cmd_brief(args, home, cfg):
         res["candidate"] = {k: c.get(k) for k in ("setup", "side", "kind", "score", "entry", "stop", "target1", "target2", "expires", "close_by")}
         res["decision"] = engine_decision(plan, sim, chk, ev_stats)
         D = res["decision"]
-        if (c["kind"] == "event" and D.get("decision") == "NO TRADE" and D.get("blocks")
+        if (c["kind"] == "event" and D.get("decision") in ("NO TRADE", "WAIT") and D.get("blocks")
                 and str((sim or {}).get("verdict") or "").startswith("POSITIVE") and (D.get("ev_r") or 0) >= 0.10):
-            # a tested news rule fired and only the rules check stopped it (the news check, a loss limit...): say so, so the
-            # app does not report "no signal tonight" and the user sees exactly what was blocked and why
+            # a tested news rule fired and only the rules check stopped it (the news check, a loss limit, a release inside
+            # the hold...): say so, so the app does not report "no signal tonight" and the user sees what was blocked and why
             res["blocked_signal"] = {"setup": c["setup"], "side": c["side"], "entry": c.get("entry"), "expires": c.get("expires"),
                                      "by": [b.split(":")[0].strip() for b in D["blocks"]]}
     else:

@@ -18,7 +18,12 @@ This repository is what Netlify deploys:
 - `netlify/functions/watchdog.mjs`: runs every 2 minutes and sends phone alerts through ntfy, even when the app is
   closed: a reminder an hour before each big US release, and the SOL rule's first-hour answer after Fed decisions. It
   reads Coinbase prices (Netlify's servers can't reach Binance), so an alert means "open Trinetra"; the app decides.
-- `tests/`: `node --test tests/*.test.mjs`.
+- `tests/`: the watchdog's tests (`node --test tests/*.test.mjs`) and the engine's scenario tests, which run the real
+  `desk.py` pipeline against a scripted exchange with the clock pinned (`python3 -m unittest discover -s tests/engine -p
+  'test_*.py'`; the full news-day matrix is `python3 tests/engine/run_matrix.py`, and `tests/engine/replay_history.py`
+  replays the news rules on real Binance history from data.binance.vision).
+- `tools/stamp_build.py`: after editing anything in `site/engine`, re-stamps the checksums and the build id so installed
+  apps load the new engine.
 - `netlify.toml`: publish `site/`, no build step; Netlify installs `@netlify/blobs` for the functions.
 
 ## One-time setup
