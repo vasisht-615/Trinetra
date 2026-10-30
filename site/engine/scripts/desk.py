@@ -5120,6 +5120,21 @@ def order_candidates(E, snap):
             + [dict(c, kind="event", score=100) for c in ev if c["evidence"] == "UNPROVEN"])
 
 
+def coin_glance(snap, closed):
+    """A compact read for the app's board, from data the snapshot already holds: the last day of hourly closes (a
+    sparkline), the 24-hour change, each timeframe's trend, regime and volatility rank, the chart setups found with
+    whatever holds each one back, and the day's key levels."""
+    c1 = [b["c"] for b in ((closed or {}).get("1h") or [])][-25:]
+    price = snap.get("price")
+    chg = (price / c1[0] - 1) * 100 if len(c1) == 25 and price and c1[0] else None
+    lv = snap.get("levels") or {}
+    return {"spark": [sig(x) for x in c1], "chg24_pct": rnd(chg, 2),
+            "tf": {tf: {k: t.get(k) for k in ("trend", "regime", "atr_rank", "rsi", "adx")} for tf, t in (snap.get("timeframes") or {}).items()},
+            "setups": [{k: x.get(k) for k in ("setup", "side", "score", "entry", "stop", "target1", "r_to_t1", "gates", "tradeable")}
+                       for x in (snap.get("setups") or [])[:4]],
+            "levels": {k: lv.get(k) for k in ("prev_day_high", "prev_day_low", "day_open", "week_open")}}
+
+
 def cmd_brief(args, home, cfg):
     """One command, no Claude needed: snapshot, the news-event read if a release is near, the best
     candidate planned, history-tested and rules-checked, and an engine-only decision. Saves packet.txt
@@ -5129,11 +5144,11 @@ def cmd_brief(args, home, cfg):
     now = now_ms()
     tz = cfg["tz_offset_minutes"]
     try:
-        snap, _, _, _ = build_snapshot(net, sym, cfg)
+        snap, _, closed, _ = build_snapshot(net, sym, cfg)
     except DeskError as e:
         if args.offline:
             raise
-        snap, _, _, _ = build_snapshot(net, sym, cfg, source="bybit")
+        snap, _, closed, _ = build_snapshot(net, sym, cfg, source="bybit")
         snap["errors"].insert(0, "Binance failed (%s); fell back to Bybit (no history test possible)" % e)
     rd = new_run_dir(home, sym)
     write_json(os.path.join(rd, "snapshot.json"), snap)
@@ -5169,7 +5184,7 @@ def cmd_brief(args, home, cfg):
            "event": E and {k: E.get(k) for k in ("name", "kind", "phase", "minutes_since", "read", "release")}, "candidate": None,
            "event_ideas": [{k: c.get(k) for k in ("setup", "side", "entry", "stop", "target1", "expires", "evidence", "history", "status")}
                            for c in ((E or {}).get("candidates") or []) + ((E or {}).get("missed") or [])],
-           "headlines": heads, "headline_error": head_err}
+           "headlines": heads, "headline_error": head_err, "glance": coin_glance(snap, closed)}
     plan = sim = chk = None
     ev_stats = None
     hold_note = None
@@ -5633,7 +5648,8 @@ def cmd_today(args, home, cfg):
                            "why": D.get("why"), "blocks": D.get("blocks") or [], "ev_r": D.get("ev_r"), "p0": D.get("p0"),
                            "candidate": b.get("candidate"), "event": b.get("event"), "event_ideas": b.get("event_ideas") or [],
                            "packet": b.get("packet"), "run_dir": b.get("run_dir"), "hold_note": b.get("hold_note"),
-                           "blocked_signal": b.get("blocked_signal"), "error": D.get("decision") == "NOT CHECKED"})
+                           "blocked_signal": b.get("blocked_signal"), "glance": b.get("glance"),
+                           "error": D.get("decision") == "NOT CHECKED"})
     T["signals"] = [c for c in T["coins"] if str(c.get("decision") or "").startswith("SIGNAL")]
     nctx = load_news_context(home, now)
     if nctx:
