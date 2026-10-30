@@ -54,7 +54,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-VERSION = "1.3.3"
+VERSION = "1.4.0"
 UA = "crypto-futures-desk/%s (personal research; python-urllib)" % VERSION
 
 BINANCE = "https://fapi.binance.com"
@@ -111,6 +111,8 @@ DEFAULTS = {
     "chase_atr_max": 0.5,
     "block_high_vol_regime": True,
     "chart_signals": False,
+    "small_signals": True,
+    "small_signal_risk": 0.25,
     "auto_track": True,
     "watchlist": ["BTC", "ETH", "SOL", "XRP", "LINK"],
     "primary_tf": "4h",
@@ -935,6 +937,8 @@ def analyse_event(bars, t_rel, now, kind="OTHER", stats=None, cfg=None, sym="BTC
         cand["evidence"] = ("AVOID" if verdict.startswith(("NEGATIVE", "NO EDGE")) else
                             "UNTESTED" if verdict.startswith("INSUFFICIENT") else
                             "SUPPORTED" if verdict.startswith("POSITIVE") else "UNPROVEN")
+        if cand["evidence"] == "UNPROVEN" and small_rule(coin, kind, setup, cfg):
+            cand["tier"] = "small"
         if now > cand["expires"]:
             cand["status"] = "EXPIRED: signalled %d min after the release; the tested entry was then. Do not chase it." % (k + 1)
             out["missed"].append(cand)
@@ -1351,6 +1355,22 @@ EVENT_KINDS = (("CPI", ("cpi",)), ("FOMC", ("fomc statement", "federal funds rat
 EVENT_NOT = ("minutes", "member", "speaks", "speech", "testimony", "adp", "flash", "revised", "preliminary")
 EVENT_SETUPS = ("sweep_reclaim_fade", "breakout_accept", "fade_first_15m", "follow_first_15m", "momentum_after_60m", "spike_fade_24h")
 EVENT_FIRST_MINUTE = 30                                          # tested: no event entry before 30 minutes after the release
+# News rules traded small: positive on their own coin's history and again on Binance perpetuals with the funding paid,
+# but not proven (the 90% interval still includes zero). They signal at `small_signal_risk` of normal risk (a quarter by
+# default, whatever your record), are labelled "small" everywhere, are tracked apart from proven signals, and never count
+# toward your edge status. On a Fed night ETH moves with SOL about 9 nights in 10, so with SOL's signal it is mostly the
+# same bet made larger, not a second bet. Perpetual replay: tests/engine/replay_history.py (30 Oct 2026).
+SMALL_RULES = {("ETH", "FOMC", "momentum_after_60m"): {"perp_n": 39, "perp_avg_R": 0.237, "perp_ci90": (-0.08, 0.55), "p_no_edge": 0.11,
+                                                     "period": "Sep 2019 to Sep 2026"}}
+
+
+def small_rule(coin, kind, rule, cfg=None):
+    """The evidence for a news rule traded small, or None (also None when small signals are turned off)."""
+    if not (cfg or DEFAULTS).get("small_signals", True):
+        return None
+    return SMALL_RULES.get((base_of(coin or ""), kind, rule))
+
+
 EVENT_STOP_FLOOR_PCT = {"BTC": 1.5, "ETH": 2.0, "default": 2.5}  # tested on BTC at 1.5%; wider for more volatile coins
 EVENT_ORDER_MINUTES = 15   # tested: a market entry at the signal close; entering up to 15 minutes later, with the stop and targets
                            # measured from that later fill, kept the SOL Fed edge, so a signal is good for 15 minutes and no longer
@@ -1474,7 +1494,7 @@ def fit_hold_to_calendar(c, macro, now, cfg, t_rel, kind, coin, stats=None):
     When one falls inside the hold, the plan closes earlier (your blackout ahead of it) if that still leaves at least the
     shortest hold that kept the edge in testing, and the decision then uses that shorter hold's history. Otherwise the
     candidate is left as it is and the rules block it. Returns (candidate, note or None)."""
-    if c.get("evidence") != "SUPPORTED" or t_rel is None or not c.get("close_by"):
+    if (c.get("evidence") != "SUPPORTED" and c.get("tier") != "small") or t_rel is None or not c.get("close_by"):
         return c, None
     before = int(cfg["macro_blackout_minutes_before"]) * 60000
     hits = [e for e in macro or [] if "t" in e and e.get("impact") == "High" and e.get("country") in ("USD", "ALL")
@@ -2957,7 +2977,8 @@ def probation_status(rows, cfg):
     res = [r for r in rows if r.get("type") == "trade" and r.get("status") == "resolved"
            and r.get("decision") in ("TAKE", "PAPER")]
     res.sort(key=lambda r: (r.get("outcome") or {}).get("exit_t") or r.get("ts", 0))
-    Rs = [x for x in ((r.get("outcome") or {}).get("R") for r in res) if x is not None]
+    # small-signal trades are scored apart: they can trip the kill switch below, never prove the edge
+    Rs = [x for x in ((r.get("outcome") or {}).get("R") for r in res if r.get("tier") != "small") if x is not None]
     live = [x for x in ((r.get("outcome") or {}).get("R") for r in res if r.get("decision") == "TAKE") if x is not None]
     if live:
         streak = 0
@@ -3102,7 +3123,7 @@ def track_ideas(home, cfg, sym, now, decision, plan, cand, E, price=None):
             new[-1]["blocked_by"] = blocked_by[:5]
     off = any(b == CHART_SIGNALS_OFF for b in (decision or {}).get("blocks") or [])
     if plan and cand and (d.startswith("SIGNAL") or (d == "NO TRADE" and off and cand.get("kind") == "setup")):
-        add("signal" if d.startswith("SIGNAL") else "chart pass", plan.get("setup"), plan["side"], plan["entry"], plan["stop"],
+        add(("small signal" if plan.get("tier") == "small" else "signal") if d.startswith("SIGNAL") else "chart pass", plan.get("setup"), plan["side"], plan["entry"], plan["stop"],
             plan["targets"][0]["price"], plan.get("entry_type", "limit"), float(plan.get("fill_window_hours") or 4),
             float(plan.get("horizon_hours") or 24), cand.get("evidence") or "POSITIVE",
             rel if cand.get("kind") == "event" else sig(plan["entry"]))
@@ -3370,7 +3391,8 @@ def run_checks(cfg, plan, snap, rows, macro=None, now=None, venue_price=None, si
     # trades that averaged +1.07R (data/gates_on_fed_SOL.json), and the ATR width blocked the tested 2.5% stop whenever the
     # 4h ATR was under 0.83% (quiet weeks), so for it they are warnings, not blocks. Risk limits still apply in full:
     # a wider stop only means a smaller position for the same loss at the stop.
-    tested_news = ev_ok and str((sim or {}).get("verdict") or "").startswith("POSITIVE")
+    tested_news = ev_ok and (str((sim or {}).get("verdict") or "").startswith("POSITIVE")
+                             or (plan.get("tier") == "small" and str((sim or {}).get("verdict") or "").startswith("UNPROVEN")))
     min_rr = float(cfg.get("event_min_net_rr", 1.0)) if ev_ok else float(cfg["min_net_rr"])
     if not stop:
         blocks.append("no stop: every trade needs a stop placed on the exchange at entry")
@@ -3651,7 +3673,8 @@ CONFIG_SCHEMA = {
     "maintenance_margin_rate": ("map", 0.001, 0.2, None), "liquidation_fee": ("num", 0, 0.05),
     "macro_blackout_minutes_before": ("int", 30, 240), "macro_blackout_minutes_after": ("int", 30, 240),
     "mid_range_band": ("band",), "stop_atr_min": ("num", 0.1, 1.0), "stop_atr_max": ("num", 1.0, 6.0), "chase_atr_max": ("num", 0.1, 2.0),
-    "block_high_vol_regime": ("bool",), "chart_signals": ("bool",), "auto_track": ("bool",), "primary_tf": ("choice", TF_CHOICES), "higher_tf": ("choice", TF_CHOICES),
+    "block_high_vol_regime": ("bool",), "chart_signals": ("bool",), "small_signals": ("bool",), "small_signal_risk": ("num", 0.05, 0.5),
+    "auto_track": ("bool",), "primary_tf": ("choice", TF_CHOICES), "higher_tf": ("choice", TF_CHOICES),
     "default_entry_type": ("choice", ("limit", "market")), "scan_min_quote_volume": ("num", 0, 1e12), "scan_top": ("int", 5, 100),
     "mode": ("choice", ("paper", "live")), "probation_min_trades": ("int", 30, 1000), "unproven_risk_multiplier": ("num", 0.1, 1.0),
     "event_slippage": ("num", 0.0, 0.02), "event_min_stop_pct": ("map", 0.5, 10.0, None), "event_min_net_rr": ("num", 0.8, 3.0),
@@ -4224,7 +4247,10 @@ def cmd_plan(args, home, cfg):
     rows = journal_load(home)
     cfg_eff = cfg
     mult = 1.0
-    if probation_status(rows, cfg)["status"] != "PROVEN":
+    small = getattr(args, "tier", None) == "small"
+    if small:
+        mult = max(0.05, min(0.5, float(cfg.get("small_signal_risk", 0.25))))
+    elif probation_status(rows, cfg)["status"] != "PROVEN":
         mult = max(0.0, min(1.0, float(cfg.get("unproven_risk_multiplier", 0.5))))
     nl, nr, _ = news_level(load_news_context(home), sym)
     nmult = 0.5 if nl == "elevated" else 1.0
@@ -4237,7 +4263,12 @@ def cmd_plan(args, home, cfg):
     plan.update({"created_by": "desk.py plan", "created_at": created, "setup": args.setup, "tf": tf,
                  "horizon_hours": horizon_h, "close_by": created + int(horizon_h * 3600000),
                  "fill_window_hours": args.fill_window, "has_snapshot": bool(snap)})
-    if mult < 1.0:
+    if small:
+        plan["tier"] = "small"
+        plan["notes"].append("small signal: a news rule that is positive but not proven, sized at %.0f%% of your normal risk and "
+                             "scored apart from proven signals" % (mult * 100))
+        plan["risk_multiplier"] = mult
+    elif mult < 1.0:
         plan["notes"].append("edge unproven: sized at %.0f%% of your normal risk until your record proves an edge" % (mult * 100))
         plan["risk_multiplier"] = mult
     if nmult < 1.0:
@@ -4548,6 +4579,8 @@ def cmd_journal(args, home, cfg):
                "max_loss": plan.get("max_loss_at_stop"), "close_by": plan.get("close_by"), "intensity": args.intensity,
                "edge_status_at_entry": pr["status"],
                "status": "open" if args.decision in ("TAKE", "PAPER") else "skipped"}
+        if plan.get("tier"):
+            row["tier"] = plan["tier"]           # a small-signal trade is scored apart and never proves the edge
         fill = getattr(args, "fill", None)
         if fill is not None:
             # Execution record: the price you actually got. The stop and targets keep their distance from the entry (set them
@@ -5091,9 +5124,10 @@ def engine_decision(plan, sim, chk, ev_stats=None, min_ev=0.10):
     blocks = (chk or {}).get("blocks") or []
     other = [b for b in blocks if not b.startswith("history test")]          # the verdict itself is stated once, below
     rules = ("; rules check: " + "; ".join(other)) if other else ""
+    small = plan.get("tier") == "small" and v.startswith("UNPROVEN") and bool(ev_stats)
     if v.startswith("NEGATIVE"):
         out["decision"], out["why"] = "NO TRADE", "history: " + v + rules
-    elif not v.startswith("POSITIVE"):
+    elif not v.startswith("POSITIVE") and not small:
         out["decision"], out["why"] = "NO TRADE", ("no proven edge (history: %s)%s" % (v.split(":")[0] if v else "none", rules))
     elif out["ev_r"] is None:
         out["decision"], out["why"] = "NO TRADE", "no history test, so no measurable edge" + rules
@@ -5106,6 +5140,10 @@ def engine_decision(plan, sim, chk, ev_stats=None, min_ev=0.10):
     else:
         out["decision"] = "SIGNAL " + plan["side"].upper()
         out["why"] = "expected value %+.2fR after costs (base: %s)" % (out["ev_r"], src)
+        if small:
+            out["tier"] = "small"
+            out["why"] = ("small signal (positive but not proven, so sized at %.0f%% of your normal risk): " % (100 * float(plan.get("risk_multiplier") or 0.25))
+                          + out["why"])
     return out
 
 
@@ -5116,8 +5154,9 @@ def order_candidates(E, snap):
     supported first-hour momentum)."""
     ev = [c for c in (E or {}).get("candidates") or [] if c.get("evidence") in ("SUPPORTED", "UNPROVEN")]
     return ([dict(c, kind="event", score=100) for c in ev if c["evidence"] == "SUPPORTED"]
+            + [dict(c, kind="event", score=90) for c in ev if c["evidence"] == "UNPROVEN" and c.get("tier") == "small"]
             + [dict(c, kind="setup") for c in (snap or {}).get("setups") or [] if c.get("tradeable")]
-            + [dict(c, kind="event", score=100) for c in ev if c["evidence"] == "UNPROVEN"])
+            + [dict(c, kind="event", score=100) for c in ev if c["evidence"] == "UNPROVEN" and c.get("tier") != "small"])
 
 
 def coin_glance(snap, closed):
@@ -5200,6 +5239,8 @@ def cmd_brief(args, home, cfg):
         if c["kind"] == "event":
             window_h = max(1.0, (float(c.get("expires") or now) - now) / 60000.0) / 60.0      # what is left of the 15-minute window
             argv += ["--horizon-hours", repr(max(0.25, float(c["horizon_hours"]))), "--entry-type", "market", "--fill-window", repr(window_h)]
+            if c.get("tier") == "small":
+                argv += ["--tier", "small"]
             ev_stats = c.get("history_stats")
         _quiet(cmd_plan, argv, home, cfg, args)
         plan = read_json(os.path.join(rd, "plan.json"), "plan")
@@ -5235,12 +5276,16 @@ def cmd_brief(args, home, cfg):
         res["candidate"] = {k: c.get(k) for k in ("setup", "side", "kind", "score", "entry", "stop", "target1", "target2", "expires", "close_by")}
         res["decision"] = engine_decision(plan, sim, chk, ev_stats)
         D = res["decision"]
+        tested = str((sim or {}).get("verdict") or "").startswith("POSITIVE") or (plan.get("tier") == "small"
+                                                                                  and str((sim or {}).get("verdict") or "").startswith("UNPROVEN"))
+        if D.get("tier"):
+            res["tier"] = D["tier"]
         if (c["kind"] == "event" and D.get("decision") in ("NO TRADE", "WAIT") and D.get("blocks")
-                and str((sim or {}).get("verdict") or "").startswith("POSITIVE") and (D.get("ev_r") or 0) >= 0.10):
+                and tested and (D.get("ev_r") or 0) >= 0.10):
             # a tested news rule fired and only the rules check stopped it (the news check, a loss limit, a release inside
             # the hold...): say so, so the app does not report "no signal tonight" and the user sees what was blocked and why
             res["blocked_signal"] = {"setup": c["setup"], "side": c["side"], "entry": c.get("entry"), "expires": c.get("expires"),
-                                     "by": [b.split(":")[0].strip() for b in D["blocks"]]}
+                                     "by": [b.split(":")[0].strip() for b in D["blocks"]], "tier": plan.get("tier")}
     else:
         weak = [c for c in (E or {}).get("candidates") or [] if c.get("evidence") in ("AVOID", "UNTESTED")]
         held = [s for s in snap.get("setups") or [] if s.get("gates")]
@@ -5630,8 +5675,9 @@ def cmd_today(args, home, cfg):
     # comes sooner, and a data problem on another coin later in the run cannot hold it up.
     live = [g for g in groups if g["t"] <= now <= g["t"] + 80 * 60000]
     first = [norm_symbol(coin) for g in live for coin, _ in proven_news_rules(g["kind"], stats)]
-    if first:
-        coins = [c for c in coins if c in first] + [c for c in coins if c not in first]
+    first += [norm_symbol(c) for g in live for (c, k, r) in SMALL_RULES if k == g["kind"] and small_rule(c, k, r, cfg)]
+    if first:                                           # proven rules first, then small ones: each has 15 minutes to be placed
+        coins = sorted([c for c in coins if c in first], key=first.index) + [c for c in coins if c not in first]
     for sym in coins:
         try:
             code, out = _quiet(cmd_brief, ["--json", "brief", sym], home, cfg, args)
@@ -5648,7 +5694,7 @@ def cmd_today(args, home, cfg):
                            "why": D.get("why"), "blocks": D.get("blocks") or [], "ev_r": D.get("ev_r"), "p0": D.get("p0"),
                            "candidate": b.get("candidate"), "event": b.get("event"), "event_ideas": b.get("event_ideas") or [],
                            "packet": b.get("packet"), "run_dir": b.get("run_dir"), "hold_note": b.get("hold_note"),
-                           "blocked_signal": b.get("blocked_signal"), "glance": b.get("glance"),
+                           "blocked_signal": b.get("blocked_signal"), "glance": b.get("glance"), "tier": b.get("tier"),
                            "error": D.get("decision") == "NOT CHECKED"})
     T["signals"] = [c for c in T["coins"] if str(c.get("decision") or "").startswith("SIGNAL")]
     nctx = load_news_context(home, now)
@@ -5731,8 +5777,8 @@ def cmd_today(args, home, cfg):
     if T["signals"]:
         for c in T["signals"]:
             cd = c.get("candidate") or {}
-            L.append("  >> %s %s: %s %s, entry %s, stop %s, T1 %s%s. Full plan, size and checks: %s"
-                     % (base_of(c["symbol"]), c["decision"], cd.get("setup"), cd.get("side"), fp(cd.get("entry")), fp(cd.get("stop")),
+            L.append("  >> %s %s%s: %s %s, entry %s, stop %s, T1 %s%s. Full plan, size and checks: %s"
+                     % (base_of(c["symbol"]), c["decision"], " (SMALL: positive but unproven, a quarter of your normal risk)" if c.get("tier") == "small" else "", cd.get("setup"), cd.get("side"), fp(cd.get("entry")), fp(cd.get("stop")),
                         fp(cd.get("target1")), ((", a market order by %s (stop and target from your fill)" if cd.get("kind") == "event"
                                                  else ", order expires %s") % fmt_time(cd["expires"], tz)) if cd.get("expires") else "",
                         c.get("packet")))
@@ -6103,6 +6149,7 @@ def build_parser():
                    help="time stop: close by this many hours after entry (default 48h on 4h bars)")
     p.add_argument("--replace", action="store_true", help="overwrite the plan in this run folder instead of starting a new one")
     p.add_argument("--fill-window", dest="fill_window", type=float, default=4.0)
+    p.add_argument("--tier", choices=["small"], help="a news rule traded small (sized at small_signal_risk of normal risk)")
     p.add_argument("--equity", type=float)
     p.add_argument("--setup")
     p.add_argument("--atr", type=float, help="ATR of the primary timeframe (chart mode: read it off the DESK table)")

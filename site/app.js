@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.3-38a7d2c41001";
+const BUILD = "1.4.0-83593843968b";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -412,7 +412,7 @@ function notifySignals(T) {
     store("desk-notified", key);
     log("signal", "SIGNAL " + c.symbol + " " + cd.setup + " " + cd.side, { entry: cd.entry, stop: cd.stop, target: cd.target1, expires: cd.expires, demo: S.todayDemo });
     if (S.todayDemo) continue;
-    const title = (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
+    const title = (isSmall(c) ? "Small signal: " : "") + (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
     const plan = S.signalPlans[c.symbol] || {}, sell = cd.side === "short";
     const e = plan.entry || cd.entry, st = plan.stop || cd.stop, t1 = ((plan.targets || [])[0] || {}).price || cd.target1;
     const pct = (a, b) => num(Math.abs(a - b) / a * 100, 2) + "%";
@@ -777,7 +777,8 @@ function recordText(R) {
     return Rs.length ? signed(Rs.reduce((a, b) => a + b, 0) / Rs.length) + "R a call over " + Rs.length + " scored (" + Rs.filter((x) => x > 0).length + " won)"
       : "no scored calls yet" + (xs.length ? " (" + xs.length + " waiting)" : "");
   };
-  const L = ["Engine signals: " + sc((r) => r.decision === "TRACK" && r.track_kind === "signal"), "Agent desk: " + sc((r) => r.decision === "TRACK" && r.track_kind === "agent desk"),
+  const L = ["Engine signals: " + sc((r) => r.decision === "TRACK" && r.track_kind === "signal"), "Small signals (unproven, quarter size): " + sc((r) => r.decision === "TRACK" && r.track_kind === "small signal"),
+    "Agent desk: " + sc((r) => r.decision === "TRACK" && r.track_kind === "agent desk"),
     "Your trades: " + sc((r) => r.decision === "TAKE"), "", "Recent calls (newest first):"];
   for (const r of rows.filter((r) => r.decision !== "TRACK" || ["signal", "agent desk"].includes(r.track_kind)).slice(0, 15)) {
     L.push("  " + new Date(r.ts).toISOString().slice(0, 16).replace("T", " ") + " UTC " + coinOf(r.symbol) + " " + (r.side || "") + " [" + (r.decision === "TAKE" ? "you" : r.track_kind || r.decision) + "] "
@@ -797,8 +798,8 @@ async function buildFeed() {
   try { record = recordText(JSON.parse(await call("records"))); } catch (e) { /* kept as is */ }
   return { v: 1, build: BUILD, engine: (S.meta || {}).engine, checked_at: S.todayAt, text: todayText(T, false),
     today: { as_of: T.as_of, calendar_source: T.calendar_source,
-      coins: (T.coins || []).map((c) => pick(c, ["symbol", "decision", "price", "why", "error", "blocked_signal"])),
-      signals: (T.signals || []).map((c) => ({ symbol: c.symbol, decision: c.decision, hold_note: c.hold_note,
+      coins: (T.coins || []).map((c) => pick(c, ["symbol", "decision", "price", "why", "error", "blocked_signal", "tier"])),
+      signals: (T.signals || []).map((c) => ({ symbol: c.symbol, decision: c.decision, hold_note: c.hold_note, tier: c.tier,
         candidate: pick(c.candidate, ["setup", "side", "entry", "stop", "target1", "target2", "expires", "close_by", "evidence"]),
         plan: S.signalPlans[c.symbol] ? pick(S.signalPlans[c.symbol], ["entry", "entry_type", "stop", "targets", "qty", "notional", "leverage", "max_loss_at_stop", "close_by", "notes"]) : null })),
       watch: T.watch || [], headlines: (T.headlines || []).map((h) => pick(h, ["source", "title", "link", "t"])), errors: (T.errors || []).slice(0, 10), news_check: T.news_check || null },
@@ -1138,7 +1139,7 @@ function coinStatus(k, c) {
   // one line under each coin: what the engine sees, and what stands between it and a signal
   if (!c) return ["", "Waiting for the first check."];
   const d = String(c.decision || ""), sets = (c.glance && c.glance.setups) || [];
-  if (d.startsWith("SIGNAL")) return ["sig", "Signal: " + sideWord((c.candidate || {}).side) + " " + k + ". The ticket is at the top."];
+  if (d.startsWith("SIGNAL")) return ["sig", (isSmall(c) ? "Small signal (unproven, a quarter of your risk): " : "Signal: ") + sideWord((c.candidate || {}).side) + " " + k + ". The ticket is at the top."];
   if (c.blocked_signal) return ["care", "Its tested rule fired but is paused. See the top of the page."];
   if (c.error) return ["bad", "Not checked: no market data in the last check."];
   if (d === "WAIT") return ["fed", "Wait: " + plain(c.why || "").slice(0, 120)];
@@ -1340,6 +1341,12 @@ function verdictInner() {
   add(wrap, [el("h1", {}, h), el("p", { class: "why" }, why), marketPulse(T), when]);
   return wrap;
 }
+// A small signal: a news rule that made money on its own history and again on Binance perpetuals, but is not proven
+// (its range still includes zero). It is sized at a quarter of normal risk and scored apart from proven signals.
+const isSmall = (c) => !!c && (c.tier === "small" || (c.plan && c.plan.tier === "small"));
+const SMALL_WHY = "Small and unproven: ETH's first-hour Fed rule averaged +0.24R a trade over 39 Fed nights on Binance perpetuals, after costs and funding, "
+  + "but that could still be luck (about 1 chance in 9). So it is a quarter of your normal risk and scored apart from proven signals. "
+  + "On most Fed nights ETH moves with SOL: taken together they are one bigger bet, not two.";
 function ticketBlock(c, given, example) {
   const cd = c.candidate || {}, plan = given || S.signalPlans[c.symbol] || {};
   const sell = cd.side === "short", coin = coinOf(c.symbol);
@@ -1348,17 +1355,21 @@ function ticketBlock(c, given, example) {
   const stopPct = Math.abs(e - st) / e * 100, tgtPct = Math.abs(t1 - e) / e * 100;
   const isEvent = cd.kind === "event" || !!(cd.reprice || cd.signal_time);
   const rm = Number(plan.risk_multiplier || 1), nm = Number(plan.news_multiplier || 1);
-  const sizeTxt = rm < 1 && nm < 1 ? " Sized at a quarter of your normal risk: half while your record is new, and half again for the news check."
+  const sizeTxt = plan.tier === "small" ? " Sized at " + Math.round(rm * 100) + "% of your normal risk: a small signal" + (nm < 1 ? ", and half again for the news check." : ".")
+    : rm < 1 && nm < 1 ? " Sized at a quarter of your normal risk: half while your record is new, and half again for the news check."
     : rm < 1 ? " Sized at half your normal risk while your record is new." : nm < 1 ? " Sized at half your normal risk because of the news check." : "";
   const order = coin + " perpetual: " + (sell ? "SELL " : "BUY ") + (plan.qty ? num(plan.qty, 4) + " " + coin + " " : "") + "at market, about " + num(e) + ". Stop " + num(st) + " (" + num(stopPct, 2) + "% "
     + (sell ? "above" : "below") + " the fill). Target " + num(t1) + " (" + num(tgtPct, 2) + "% " + (sell ? "below" : "above") + ")." + (plan.close_by ? " Close by " + dayTime(plan.close_by) + "." : "");
-  const t = el("div", { class: "ticket " + (sell ? "sell" : "buy") + (example ? " example" : "") },
+  const small = isSmall(c) || plan.tier === "small";
+  const t = el("div", { class: "ticket " + (sell ? "sell" : "buy") + (example ? " example" : "") + (small ? " small" : "") },
     el("div", { class: "tk-head" },
-      el("div", {}, el("p", { class: "tk-kick" }, el("i", { class: "tk-live", "aria-hidden": "true" }), (example ? "Example" : "Signal") + (cd.setup ? ", " + setupName(cd.setup) : "")),
+      el("div", {}, el("p", { class: "tk-kick" }, el("i", { class: "tk-live", "aria-hidden": "true" }),
+        (example ? "Example" : small ? "Small signal" : "Signal") + (cd.setup ? ", " + setupName(cd.setup) : "")),
         el("h1", {}, (sell ? "Sell " : "Buy ") + coin + " now.")),
       cd.expires ? ringEl(cd.expires, cd.expires - 15 * MIN) : null),
     cd.expires ? el("p", { class: "deadline" }, (isEvent ? "A market order before " : "Order valid until "), el("b", {}, clock(cd.expires)), ". ",
       el("span", { "data-left": String(cd.expires) }, inWords(cd.expires) + " left.")) : null,
+    small ? el("p", { class: "tk-small" }, SMALL_WHY) : null,
     el("div", { class: "tk-body" }, e && st && t1 ? ladder(sell, e, st, t1, t2) : null,
       el("ol", { class: "steps" },
         el("li", {}, el("span", {}, "On " + venueName() + ", " + coin + " perpetual: " + (sell ? "sell " : "buy "), el("b", {}, plan.qty ? num(plan.qty, 4) + " " + coin : "your size"), " at market, about " + num(e) +
@@ -1546,7 +1557,7 @@ function pickEvent(i) {
 }
 function chipFor(c) {
   const d = String(c.decision || "");
-  if (d.startsWith("SIGNAL")) return el("span", { class: "chip sig" }, "Signal");
+  if (d.startsWith("SIGNAL")) return el("span", { class: "chip sig" + (isSmall(c) ? " small" : "") }, isSmall(c) ? "Small signal" : "Signal");
   if (c.error) return el("span", { class: "chip bad" }, "Not checked");
   if (c.blocked_signal) return el("span", { class: "chip care" }, "Paused");
   if (d === "WAIT") return el("span", { class: "chip watch" }, "Wait");
@@ -1650,7 +1661,7 @@ function renderHome() {
   const T = S.today, cs = (T && T.coins) || [];
   document.body.dataset.mood = sig.length ? "signal" : cs.some((c) => c.blocked_signal) ? "care" : S.todayError || (cs.length && cs.every((c) => c.error)) ? "bad" : T ? "calm" : "checking";
   if (S.today) S.coinsShown = true;
-  document.title = sig.length && !S.todayDemo ? "● Signal: " + coinOf(sig[0].symbol) + " | Trinetra" : "Trinetra";
+  document.title = sig.length && !S.todayDemo ? "● " + (sig.every(isSmall) ? "Small signal: " : "Signal: ") + sig.map((c) => coinOf(c.symbol)).join(", ") + " | Trinetra" : "Trinetra";
   document.querySelectorAll('.nav a[data-view="home"] .badge-dot').forEach((n) => n.remove());
   if (sig.length && !S.todayDemo) document.querySelector('.nav a[data-view="home"]').append(el("i", { class: "badge-dot", "aria-hidden": "true" }));
 }
@@ -1666,7 +1677,7 @@ function todayText(T, isDemo) {
   for (const c of T.coins || []) L.push("  " + coinOf(c.symbol).padEnd(5) + " " + c.decision + (c.price ? " at " + sig6(c.price) : "") + ": " + (c.why || ""));
   for (const c of T.signals || []) {
     const cd = c.candidate || {};
-    L.push("  >> " + c.symbol + " " + c.decision + ": " + cd.setup + " " + cd.side + ", entry " + cd.entry + ", stop " + cd.stop + ", T1 " + cd.target1
+    L.push("  >> " + c.symbol + " " + c.decision + (isSmall(c) ? " (SMALL: unproven, a quarter of normal risk)" : "") + ": " + cd.setup + " " + cd.side + ", entry " + cd.entry + ", stop " + cd.stop + ", T1 " + cd.target1
       + (cd.expires ? ((cd.reprice || cd.signal_time) ? ", a market order by " : ", order expires ") + stamp(cd.expires) : ""));
   }
   if ((T.watch || []).length) { L.push("  Watching (NOT signals):"); for (const w of T.watch.slice(0, 8)) L.push("    " + coinOf(w.symbol) + " " + w.idea + " [" + w.evidence + "]: " + w.why_not); }
@@ -1906,7 +1917,7 @@ async function renderCoin(k) {
   const g = B.glance || todayRow.glance || {};
   const head = el("div", { class: "coin-head" },
     el("div", { class: "coin-title" }, coinH1(k), price ? el("span", { class: "px" }, num(price)) : null, g.chg24_pct !== undefined ? deltaEl(g.chg24_pct, " in 24 h") : null),
-    el("div", { class: "row" }, chipFor({ decision: D.decision, error: D.decision === "NOT CHECKED", blocked_signal: B.blocked_signal }),
+    el("div", { class: "row" }, chipFor({ decision: D.decision, error: D.decision === "NOT CHECKED", blocked_signal: B.blocked_signal, tier: B.tier || (plan || {}).tier }),
       el("span", { class: "muted small" }, (st.demo ? "Demo data" : "Binance") + ", checked " + ago(st.at)),
       el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "Check again", title: "Check again", onclick: () => { delete S.coin[k]; renderCoin(k); } }, ic("refresh"))),
     el("p", { class: "lead" }, coinHeadline(k, D, plan, isSig, lights)));
@@ -1963,6 +1974,7 @@ function coinH1(k) {
 }
 function coinHeadline(k, D, plan, isSig, lights) {
   // one plain sentence: the first of the five checks that said no. The engine's own wording is under "full checks".
+  if (isSig && plan && plan.tier === "small") return (plan.side === "short" ? "Sell " : "Buy ") + k + " now, small: a positive but unproven news rule passed every check. A quarter of your normal risk.";
   if (isSig) return (plan && plan.side === "short" ? "Sell " : "Buy ") + k + " now: a tested setup passed every check.";
   if (D.decision === "NOT CHECKED") return k + " couldn't be checked: " + plain(D.why || "no market data") + ".";
   if (D.decision === "WAIT") return "Wait on " + k + ": " + plain(D.why || "") + ".";
@@ -1987,8 +1999,10 @@ function coinLights(k, st) {
   steps.push(cand && cand.setup ? ["ok", "1. Is there a setup?", "Yes: " + name + "."]
     : held.length ? ["bad", "1. Is there a setup?", "A " + setupName(held[0].setup) + " (" + sideWord(held[0].side) + ") formed, but the rules hold it back: " + uniq(held.flatMap((x) => x.gates.map(gateShort))).join(", ") + "."]
     : ["bad", "1. Is there a setup?", "No. Nothing on the chart matches a rule the engine knows."]);
+  const smallPlan = st.plan && st.plan.tier === "small";
   steps.push(!sim ? ["bad", "2. Has it made money before?", "Not tested: there is no setup."]
     : v.startsWith("POSITIVE") ? ["ok", "2. Has it made money before?", "Yes. In past tests this setup beat random entries after costs."]
+    : smallPlan && v.startsWith("UNPROVEN") ? ["watch", "2. Has it made money before?", "Probably, but not proven: +0.24R a trade over 39 Fed nights on Binance perpetuals, which could still be luck. That is why it is small."]
     : ["bad", "2. Has it made money before?", "No. In past tests it did no better than chance after costs, so it is not traded."]);
   steps.push(!chk ? ["bad", "3. Do your safety rules allow it?", "Not checked: there is no plan."]
     : bs.length ? ["bad", "3. Do your safety rules allow it?", "No: " + plain(bs[0]).split(":")[0].toLowerCase() + (bs.length > 1 ? ", and " + (bs.length - 1) + " more." : ".")]
@@ -2248,6 +2262,7 @@ async function renderRecord() {
       total: Rs.reduce((a, b) => a + b, 0), open: xs.filter((r) => r.status === "open" || r.status === "filled").length, flat: xs.filter((r) => r.status === "flat").length };
   };
   const eng = sum((r) => r.decision === "TRACK" && r.track_kind === "signal");
+  const small = sum((r) => r.decision === "TRACK" && r.track_kind === "small signal");
   const agt = sum((r) => r.decision === "TRACK" && r.track_kind === "agent desk");
   const mine = sum((r) => r.decision === "TAKE");
   const card = (title, s, main) => el("div", { class: "score" + (main ? " main" : "") }, el("p", { class: "kind" }, title),
@@ -2258,10 +2273,12 @@ async function renderRecord() {
   const verdict = !enough ? "Too early to compare: each desk needs 30 or more scored calls. Until then, trade only the engine's signals."
     : (agt.avg > eng.avg + 0.15 ? "The agent desk is ahead by " + signed(agt.avg - eng.avg) + "R a call over " + agt.scored + " calls. Ask Claude to test whether that gap is real before switching."
       : "The agent desk is not clearly ahead of the engine. Keep trading the engine's signals.");
-  const kindLabel = (r) => r.decision === "TAKE" ? "You" : r.decision === "PAPER" ? "Paper" : r.track_kind === "agent desk" ? "Agents" : r.track_kind === "signal" ? "Engine" : r.track_kind === "news idea" ? "Idea" : r.track_kind === "chart pass" ? "Chart pass" : "Call";
-  const isMain = (r) => r.decision === "TAKE" || r.decision === "PAPER" || (r.decision === "TRACK" && ["signal", "agent desk"].includes(r.track_kind));
+  const kindLabel = (r) => r.decision === "TAKE" ? (r.tier === "small" ? "You, small" : "You") : r.decision === "PAPER" ? "Paper" : r.track_kind === "agent desk" ? "Agents" : r.track_kind === "signal" ? "Engine"
+    : r.track_kind === "small signal" ? "Small" : r.track_kind === "news idea" ? "Idea" : r.track_kind === "chart pass" ? "Chart pass" : "Call";
+  const isMain = (r) => r.decision === "TAKE" || r.decision === "PAPER" || (r.decision === "TRACK" && ["signal", "small signal", "agent desk"].includes(r.track_kind));
   const match = (r) => recordFilter === "all" ? isMain(r)
-    : recordFilter === "engine" ? r.decision === "TRACK" && r.track_kind === "signal" : recordFilter === "agents" ? r.decision === "TRACK" && r.track_kind === "agent desk"
+    : recordFilter === "engine" ? r.decision === "TRACK" && r.track_kind === "signal" : recordFilter === "small" ? r.decision === "TRACK" && r.track_kind === "small signal"
+    : recordFilter === "agents" ? r.decision === "TRACK" && r.track_kind === "agent desk"
       : recordFilter === "mine" ? r.decision === "TAKE" || r.decision === "PAPER" : recordFilter === "ideas" ? r.decision === "TRACK" && ["news idea", "chart pass"].includes(r.track_kind) : true;
   const filt = (id, label) => el("button", { type: "button", "aria-pressed": recordFilter === id ? "true" : "false", onclick: () => { recordFilter = id; renderRecord(); } }, label);
   const outcomeChip = (r) => r.status === "resolved" ? el("span", { class: "chip " + (((r.outcome || {}).R || 0) > 0 ? "ok" : "bad") }, signed((r.outcome || {}).R) + "R " + ((r.outcome || {}).result || ""))
@@ -2302,7 +2319,7 @@ async function renderRecord() {
   const tabBtn = (id, label) => el("button", { type: "button", role: "tab", "aria-selected": recordTab === id ? "true" : "false", onclick: () => { recordTab = id; document.startViewTransition && !calm() ? document.startViewTransition(() => renderRecord()) : renderRecord(); } }, label);
   const recent = rows.filter(isMain).slice(0, 5);
   const scoreTab = [
-    el("div", { class: "scores" }, card("Engine", eng, true), card("Agent desk", agt), card("Your trades", mine)),
+    el("div", { class: "scores" + (small.n ? " four" : "") }, card("Engine", eng, true), small.n ? card("Small signals", small) : null, card("Agent desk", agt), card("Your trades", mine)),
     el("p", { class: "lead" }, verdict),
     el("div", { class: "panel" }, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Latest calls"), rows.filter(isMain).length > 5 ? el("button", { class: "btn quiet small", type: "button", onclick: () => { recordTab = "history"; renderRecord(); } }, "All of them") : null),
       recent.length ? el("ul", { class: "calls" }, recent.map(callRow)) : el("p", { class: "muted small" }, "None yet. Calls appear here as the engine and the agent desk make them, and each is scored by itself when its time is up.")),
@@ -2314,7 +2331,7 @@ async function renderRecord() {
       }) }, ic("refresh"), "Score open calls now"))];
   const shown = rows.filter(match).slice(0, 60);
   const historyTab = [
-    el("div", { class: "seg" }, filt("all", "All"), filt("engine", "Engine"), filt("agents", "Agent desk"), filt("mine", "Yours"), filt("ideas", "Only watched")),
+    el("div", { class: "seg" }, filt("all", "All"), filt("engine", "Engine"), filt("small", "Small"), filt("agents", "Agent desk"), filt("mine", "Yours"), filt("ideas", "Only watched")),
     shown.length ? el("ul", { class: "calls" }, shown.map(callRow)) : el("p", { class: "muted" }, "Nothing here yet. Calls appear as the engine and the agent desk make them.")];
   box.replaceChildren(el("div", { class: "page" },
     el("h1", {}, "Record"),
@@ -2418,6 +2435,7 @@ const ADV = [
   ["max_daily_loss_pct", "Daily loss limit (%)", "number", "Counts open trades too."], ["max_trades_per_day", "Most trades per day", "number", ""],
   ["tz_offset_minutes", "Time zone offset (minutes)", "number", "330 is India."], ["venue", "Where you place orders", "text", ""],
   ["gst_on_fees_pct", "Tax on fees (%)", "number", "18 in India."], ["chart_signals", "Chart-setup signals", "bool", "Off by default: in 2020 to 2026 replays they lost on balance."],
+  ["small_signals", "Small signals", "bool", "On by default: ETH an hour after Fed decisions, positive but unproven, at a quarter of your risk."],
   ["auto_track", "Track the engine's own calls", "bool", "Keeps the Record screen's engine scorecard."],
 ];
 // Settings is one grouped list. Each part folds to a single line that already says its state; tap to change it.
