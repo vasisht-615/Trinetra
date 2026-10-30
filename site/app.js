@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.3.3-789a6c8c2029";
+const BUILD = "1.3.3-38a7d2c41001";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -1601,7 +1601,7 @@ function newsCheckCard() {
   const n = S.today && S.today.news_check;
   if (!n) {
     return CL.link ? el("div", { class: "newsck" }, el("div", { class: "row between" }, el("p", { class: "kind" }, "News check"), el("span", { class: "chip" }, "None yet")),
-      el("p", { class: "small muted" }, "Claude's research runs at 08:33 IST each day" + (fedNight() ? ", and on the next Fed night at " + [3, 33, 62].map((m) => clock(fedNight().fed.t + m * MIN)).join(", ") : "")
+      el("p", { class: "small muted" }, "Claude's research runs at " + clock(new Date().setUTCHours(3, 3, 0, 0)) + " each day" + (fedNight() ? ", and on the next Fed night at " + [3, 33, 62].map((m) => clock(fedNight().fed.t + m * MIN)).join(", ") : "")
         + ". Its findings appear here and can pause or halve a trade, never create one."))
       : el("p", { class: "hint-line" }, "No research news check yet. ", el("a", { href: "#settings/claude" }, "Connect Claude"), " and its daily research appears here: it can pause or halve a trade, never create one.");
   }
