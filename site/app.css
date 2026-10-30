@@ -82,8 +82,11 @@ body.noscroll { overflow: hidden; }
 /* ---------------------------------------------------------------- header: the mark, the status light, the nav */
 .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 4px; }
 .mark { color: inherit; text-decoration: none; font: 800 22px/1 var(--display); letter-spacing: -.02em; display: flex; align-items: center; gap: 10px; }
-.mark svg { width: 30px; height: 30px; flex: none; }
+.mark svg { width: 30px; height: 30px; flex: none; overflow: visible; }
+.mark .bars { stroke: currentColor; stroke-opacity: .55; stroke-width: 2.2; stroke-linecap: round; fill: none; }
+.mark .lid { fill: none; stroke: var(--gold-line); stroke-width: 2; stroke-linejoin: round; }
 .mark .pupil { fill: var(--gold); transform-origin: 15px 15px; transform-box: view-box; }
+.mark .pupil .core { fill: var(--paper); }
 .status { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--rule); background: var(--panel); border-radius: 999px;
   padding: 7px 14px 7px 12px; font-size: 14px; cursor: pointer; transition: border-color .2s; max-width: 60vw; }
 .status span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
