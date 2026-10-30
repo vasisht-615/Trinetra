@@ -54,7 +54,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 UA = "crypto-futures-desk/%s (personal research; python-urllib)" % VERSION
 
 BINANCE = "https://fapi.binance.com"
@@ -97,7 +97,7 @@ DEFAULTS = {
     "max_open_positions": 2,
     "cooldown_after_consecutive_losses": 2,
     "min_net_rr": 1.5,
-    "fees": {"taker": 0.00055, "maker": 0.0002},
+    "fees": {"taker": 0.00063, "maker": 0.00025},     # CoinSwitch PRO futures, on leveraged volume, before GST (Oct 2026)
     "gst_on_fees_pct": 18.0,
     "tp_order": "limit",
     "slippage": {"BTC": 0.0003, "ETH": 0.0004, "default": 0.001},
@@ -5358,7 +5358,7 @@ def cmd_verify_news(args, home, cfg):
     if not allrel:
         raise DeskError("references/release_history.json is missing")
     rels = [r for r in allrel if r["kind"] == args.kind and r["t"] >= since and r["t"] + 25 * 3600000 < now][-int(args.max):]
-    fee = float((cfg.get("fees") or {}).get("taker", 0.00055)) * (1 + float(cfg.get("gst_on_fees_pct", 18)) / 100.0)
+    fee = float((cfg.get("fees") or {}).get("taker", DEFAULTS["fees"]["taker"])) * (1 + float(cfg.get("gst_on_fees_pct", 18)) / 100.0)
     slip_in, slip_after = 0.0010, EVENT_SLIP_AFTER.get(coin, 0.0010)
     trades, skipped, errors = [], [], []
     for r in rels:
