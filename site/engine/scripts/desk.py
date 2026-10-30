@@ -54,7 +54,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 UA = "crypto-futures-desk/%s (personal research; python-urllib)" % VERSION
 
 BINANCE = "https://fapi.binance.com"
@@ -2312,7 +2312,7 @@ def detect_setups(P, Pb, H, Hb, L15=None, deriv=None, levels=None, cfg=None, mac
         if macro_hits:
             gates.append("macro blackout: %s" % ", ".join("%s in %d min" % (e["title"], e["minutes_from_now"]) for e in macro_hits))
         if regime_at(P, i) == "HIGH_VOL" and cfg.get("block_high_vol_regime", True):
-            gates.append("extreme volatility regime (ATR in the top 5%% of the last 200 bars)")
+            gates.append("extreme volatility regime (ATR in the top 5% of the last 200 bars)")
         out.append({"setup": name, "side": side, "entry": sig(entry), "stop": sig(stop), "target1": sig(t1), "target2": sig(t2),
                     "risk_atr": rnd(risk / a, 2), "r_to_t1": rnd(abs(t1 - entry) / risk, 2),
                     "score": int(max(0, min(100, score))), "reasons": reasons, "conflicts": conflicts,
@@ -5228,6 +5228,7 @@ def cmd_brief(args, home, cfg):
                                      "by": [b.split(":")[0].strip() for b in D["blocks"]]}
     else:
         weak = [c for c in (E or {}).get("candidates") or [] if c.get("evidence") in ("AVOID", "UNTESTED")]
+        held = [s for s in snap.get("setups") or [] if s.get("gates")]
         dec = "NO TRADE"
         if snap.get("source") != "binance":
             dec, why = "NOT CHECKED", ("only %s prices could be reached: no history test is possible, so no signal can be checked"
@@ -5237,6 +5238,14 @@ def cmd_brief(args, home, cfg):
         elif weak:
             why = ("no tradeable setup: the news setups live now (%s) have negative, no-edge or untested history"
                    % ", ".join("%s %s" % (c["setup"], c["side"]) for c in weak))
+        elif held:
+            # say what was found and what stopped it: "no tradeable setup right now" read as if the market had nothing in it
+            gates = []
+            for s in held:
+                gates += [g for g in s["gates"] if g not in gates]
+            why = ("no tradeable setup: the chart setups found (%s) are blocked by %s%s"
+                   % (", ".join("%s %s" % (s["setup"], s["side"]) for s in held[:3]), "; ".join(gates[:3]),
+                      "" if cfg.get("chart_signals") else "; chart-setup signals are off in any case (config chart_signals)"))
         else:
             why = "no tradeable setup right now"
         res["decision"] = {"decision": dec, "why": why}

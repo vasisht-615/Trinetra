@@ -115,3 +115,31 @@ class PipelineSweep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeldBackReason(unittest.TestCase):
+    """A chart setup that the rules hold back (extreme volatility, mid-range, a release) is named in the coin's reason,
+    instead of "no tradeable setup right now", which read as if the market had nothing in it (live, 30 Oct 2026)."""
+
+    def test_reason_names_the_setup_and_what_blocked_it(self):
+        gate = "extreme volatility regime (ATR in the top 5% of the last 200 bars)"
+        orig = desk.build_snapshot
+
+        def with_held(net, sym, cfg, **kw):
+            out = orig(net, sym, cfg, **kw)
+            out[0]["setups"] = [{"setup": "trend_pullback", "side": "short", "entry": 97.28, "stop": 103.61, "target1": 87.13, "target2": 80.81,
+                               "risk_atr": 2.84, "r_to_t1": 1.6, "score": 65, "reasons": [], "conflicts": [], "gates": [gate], "tradeable": False}]
+            return out
+        desk.build_snapshot = with_held
+        try:
+            now = desk.parse_when(QUIET_DAYS[0], "now")
+            code, res = H.run(["brief", "SOL"], now, H.ScenarioExchange(now, now - 30 * 86400000, "flat"))
+        finally:
+            desk.build_snapshot = orig
+        self.assertEqual(code, 0)
+        why = res["decision"]["why"]
+        self.assertEqual(res["decision"]["decision"], "NO TRADE")
+        self.assertIn("trend_pullback short", why)
+        self.assertIn(gate, why)
+        self.assertNotIn("%%", why)
+        self.assertIn("chart-setup signals are off", why)

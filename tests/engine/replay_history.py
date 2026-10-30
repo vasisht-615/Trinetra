@@ -28,6 +28,7 @@ from harness import desk  # noqa: E402
 BASE = "https://data.binance.vision/data/futures/um"
 RULES = ("momentum_after_60m", "sweep_reclaim_fade", "breakout_accept", "spike_fade_24h")
 MIN, DAY = 60000, 86400000
+RECENT = (dt.date.today().replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
 
 
 def utc_date(ms):
@@ -41,11 +42,13 @@ class Archive(object):
         self.cache = cache
         os.makedirs(cache, exist_ok=True)
         self.downloads = 0
+        self.failures = []          # files that could not be fetched (network): reported, treated as no data
 
     def rows(self, path):
         local = os.path.join(self.cache, path.replace("/", "_"))
         if not os.path.exists(local):
             req = urllib.request.Request(BASE + "/" + path, headers={"User-Agent": "trinetra-replay/1.0"})
+            data = None
             for attempt in range(4):
                 try:
                     with urllib.request.urlopen(req, timeout=60) as r:
@@ -55,12 +58,12 @@ class Archive(object):
                     if e.code == 404:
                         open(local + ".missing", "w").close()
                         return None
-                    if attempt == 3:
-                        raise
-                except urllib.error.URLError:
-                    if attempt == 3:
-                        raise
+                except (urllib.error.URLError, OSError):
+                    pass
                 time.sleep(2 * (attempt + 1))
+            if data is None:
+                self.failures.append(path)
+                return None
             with open(local, "wb") as fh:
                 fh.write(data)
             self.downloads += 1
@@ -110,7 +113,7 @@ class HistoricalExchange(object):
                 key = (sym, tf, m)
                 if key not in self.mem:
                     rows = self.a.klines(sym, tf, month=m)
-                    if not rows:                                   # the current month is published day by day
+                    if not rows and m >= RECENT:            # the latest month or two are published day by day
                         y, mo = map(int, m.split("-"))
                         d = dt.date(y, mo, 1)
                         while d.month == mo and d <= utc_date(end):
@@ -192,7 +195,7 @@ def main():
     if a.out:
         with open(a.out, "w") as fh:
             json.dump(results, fh, indent=1)
-    print("downloaded %d files" % ex.a.downloads)
+    print("downloaded %d files; %d could not be fetched%s" % (ex.a.downloads, len(ex.a.failures), (": " + ", ".join(ex.a.failures[:5])) if ex.a.failures else ""))
     return 0
 
 
