@@ -41,6 +41,7 @@ class Market(object):
         self.a = archive
         self.now = None
         self.mem = {}
+        self.stale = []         # moments whose primary bars lagged the clock (a replay fault: the run is not valid)
 
     # ---------------------------------------------------------------- data
     def bars(self, sym, tf, start, end):
@@ -57,15 +58,20 @@ class Market(object):
             for m in months_between(start, end):
                 key = (sym, tf, m)
                 if key not in self.mem:
-                    rows = self.a.klines(sym, tf, month=m)
-                    if not rows and m >= RECENT:            # the latest month or two are published day by day
-                        y, mo = map(int, m.split("-"))
-                        d = dt.date(y, mo, 1)
-                        while d.month == mo and d <= utc_date(end):
-                            rows += self.a.klines(sym, tf, day=d)
-                            d += dt.timedelta(days=1)
-                    self.mem[key] = rows
-                out += self.mem[key]
+                    self.mem[key] = self.a.klines(sym, tf, month=m)
+                if self.mem[key] or m < RECENT:
+                    out += self.mem[key]
+                    continue
+                # the latest month or two are published day by day: read (and keep) each day as the clock reaches it,
+                # never a month frozen at the first day it was asked for
+                y, mo = map(int, m.split("-"))
+                d = max(dt.date(y, mo, 1), utc_date(start))
+                while d.month == mo and d <= utc_date(end):
+                    dk = (sym, tf, d)
+                    if dk not in self.mem:
+                        self.mem[dk] = self.a.klines(sym, tf, day=d)
+                    out += self.mem[dk]
+                    d += dt.timedelta(days=1)
         # only bars that had closed by now: the replay never sees the future
         return [r for r in out if start <= int(r[0]) <= end and int(r[6]) < self.now]
 
@@ -200,8 +206,14 @@ def run_timeline(market, start, end, every, coins, config, out):
         H.run(["config", "set", k, str(v)], start, market, home=home)
     t = start
     rows = []
+    prim = config.get("primary_tf", "4h")
+    span = desk.TF_MIN[prim] * MIN
     while t <= end:
         market.now = t
+        # the replay must show the engine the market as it was: the last closed bar must be the one just before now
+        last = market.bars(coins[0] + "USDT", prim, t - 3 * span, t)
+        if not last or t - int(last[-1][6]) > span + MIN:
+            market.stale.append(t)
         code, res = H.run(["today", "--coins", ",".join(coins)], t, market, home=home)
         if code != 0 or not isinstance(res, dict):
             rows.append({"t": t, "error": str(res)[-300:]})
@@ -260,6 +272,8 @@ def main():
     rows = run_timeline(m, start, end, step, [c.strip() for c in a.coins.split(",")], config, a.out)
     print("%d moments x %d coins in %.0f s (%d files downloaded, %d could not be fetched)" % (
         (end - start) // step + 1, len(a.coins.split(",")), time.time() - t0, m.a.downloads, len(m.a.failures)))
+    if m.stale:
+        print("WARNING: %d moments had stale %s bars (first %s): this run is not a valid replay" % (len(m.stale), a.primary, desk.fmt_time(m.stale[0], 0)))
     summarise(rows)
     return 0
 

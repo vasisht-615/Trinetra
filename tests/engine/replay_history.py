@@ -112,15 +112,18 @@ class HistoricalExchange(object):
             for m in months_between(start, end):
                 key = (sym, tf, m)
                 if key not in self.mem:
-                    rows = self.a.klines(sym, tf, month=m)
-                    if not rows and m >= RECENT:            # the latest month or two are published day by day
-                        y, mo = map(int, m.split("-"))
-                        d = dt.date(y, mo, 1)
-                        while d.month == mo and d <= utc_date(end):
-                            rows += self.a.klines(sym, tf, day=d)
-                            d += dt.timedelta(days=1)
-                    self.mem[key] = rows
-                out += self.mem[key]
+                    self.mem[key] = self.a.klines(sym, tf, month=m)
+                if self.mem[key] or m < RECENT:
+                    out += self.mem[key]
+                    continue
+                y, mo = map(int, m.split("-"))      # the latest month or two are published day by day: read each day once
+                d = max(dt.date(y, mo, 1), utc_date(start))
+                while d.month == mo and d <= utc_date(end):
+                    dk = (sym, tf, d)
+                    if dk not in self.mem:
+                        self.mem[dk] = self.a.klines(sym, tf, day=d)
+                    out += self.mem[dk]
+                    d += dt.timedelta(days=1)
         return [r for r in out if start <= int(r[0]) <= end]
 
     def __call__(self, url):
