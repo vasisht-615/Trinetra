@@ -4259,6 +4259,27 @@ def cmd_plan(args, home, cfg):
     plan = size_position(cfg_eff, sym, args.side, args.entry, args.stop, targets, atr_now=atr_now, funding_rate=fr,
                          funding_interval_h=ih, next_funding=nf, hold_hours=args.hold_hours, entry_type=args.entry_type,
                          lot=lot, equity=args.equity)
+    lifted = None
+    if small and lot and any("below the exchange minimum" in n for n in plan.get("notes") or []):
+        # A quarter of a small account's risk can be an order under the exchange minimum (5,000 INR at 1%: an ETH order of
+        # about 4.4 USDT). Size up to the minimum when the loss at the stop still stays within half your normal risk (no more
+        # than a proven signal while your record is new); otherwise the minimum blocks it, as for any plan.
+        f = mult * nmult
+        while f < 0.5 - 1e-9:                               # the smallest step up (4% at a time) that clears the minimum
+            f = min(0.5, f * 1.04)
+            plan2 = size_position(dict(cfg, risk_per_trade_pct=cfg["risk_per_trade_pct"] * f), sym, args.side, args.entry, args.stop,
+                                  targets, atr_now=atr_now, funding_rate=fr, funding_interval_h=ih, next_funding=nf,
+                                  hold_hours=args.hold_hours, entry_type=args.entry_type, lot=lot, equity=args.equity)
+            if not any("below the exchange minimum" in n for n in plan2.get("notes") or []):
+                plan, lifted = plan2, f
+                break
+    if lifted:
+        plan["notes"].append("sized up to the exchange minimum order: the loss at the stop is %.0f%% of your normal risk instead of %.0f%% "
+                             "(still no more than half, the size of a proven signal while your record is new)" % (lifted * 100, mult * nmult * 100))
+        plan["min_order_lift"] = rnd(lifted, 3)
+    elif small and any("below the exchange minimum" in n for n in plan.get("notes") or []):
+        plan["notes"].append("a small signal on this capital is under the exchange minimum even at half your normal risk: raise your "
+                             "capital or risk per trade to take small signals")
     created = now_ms()
     plan.update({"created_by": "desk.py plan", "created_at": created, "setup": args.setup, "tf": tf,
                  "horizon_hours": horizon_h, "close_by": created + int(horizon_h * 3600000),

@@ -292,6 +292,25 @@ class SmallSignals(unittest.TestCase):
         took = [r for r in desk.journal_load(home) if r.get("decision") == "TAKE"]
         self.assertEqual([r.get("tier") for r in took], ["small"])
 
+    def test_a_small_account_is_sized_up_to_the_exchange_minimum_within_half_risk(self):
+        # 5,000 INR at 1%: a quarter is an ETH order under the 5 USDT minimum; the smallest size that clears it risks less than half
+        home = home_with(config={"equity": "5000", "equity_currency": "INR", "usdt_fx": "95.08", "risk_per_trade_pct": "1", "max_leverage": "10"})
+        code, res = eth(home=home)
+        self.assertEqual(decision(res), "SIGNAL SHORT", res.get("decision"))
+        p = plan_of(res)
+        self.assertGreaterEqual(p["notional"], 5.0)
+        self.assertTrue(0.25 < p["min_order_lift"] <= 0.5, p.get("min_order_lift"))
+        self.assertLessEqual(p["max_loss_at_stop"], 5000 / 95.08 * 0.01 * 0.5 * 1.02)
+        self.assertTrue(any("exchange minimum" in n for n in p["notes"]))
+
+    def test_too_small_even_at_half_risk_is_blocked_and_says_what_to_change(self):
+        home = home_with(config={"equity": "5000", "equity_currency": "INR", "usdt_fx": "95.08", "risk_per_trade_pct": "0.25", "max_leverage": "10"})
+        code, res = eth(home=home)
+        self.assertEqual(decision(res), "NO TRADE")
+        self.assertTrue(any("exchange minimum" in b for b in res["decision"]["blocks"]))
+        self.assertTrue(any("raise your capital or risk per trade" in n for n in plan_of(res)["notes"]))
+        self.assertEqual((res.get("blocked_signal") or {}).get("tier"), "small")
+
     def test_other_coins_never_signal_small(self):
         for coin in ("BTCUSDT", "XRPUSDT", "LINKUSDT"):
             ex = H.ScenarioExchange(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)])

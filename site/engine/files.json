@@ -3,8 +3,8 @@
  "files": [
   {
    "path": "scripts/desk.py",
-   "sha256": "580b16f1642a58a7752a5fbcc72aca861fad6d6553b83e655fc67be11179d482",
-   "bytes": 337222
+   "sha256": "3822c4d500253c1cf8de0be4daf5c9158775d378cac4033f38c9d4e5fa9855cf",
+   "bytes": 339062
   },
   {
    "path": "references/event_stats.json",

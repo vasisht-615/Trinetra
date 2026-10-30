@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.4.0-83593843968b";
+const BUILD = "1.4.0-20f946f8a814";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -1329,11 +1329,14 @@ function verdictInner() {
   if (blocked) {
     // a tested rule fired and only the rules check stopped it: say exactly that, never "no tested edge"
     const bs = blocked.blocked_signal, k = coinOf(blocked.symbol);
-    const byNews = (bs.by || []).some((b) => /news check/i.test(b));
+    const byNews = (bs.by || []).some((b) => /news check/i.test(b)), tooSmall = (bs.by || []).some((b) => /exchange minimum/i.test(b));
+    const what = (bs.tier === "small" ? "The small " + k + " signal" : "The tested " + k + " rule") + " fired (" + (bs.side === "short" ? "sell" : "buy") + "), but ";
     wrap.dataset.tone = "care";
-    h = k + " rule paused.";
-    why = "The tested " + k + " rule fired (" + (bs.side === "short" ? "sell" : "buy") + "), but " + (byNews ? "the news check paused new trades" : "a rule blocked it: " + plain((bs.by || []).join("; "))) +
-      ". No trade: the news can pause or shrink a trade, never create one. The blocked trade is recorded with what it would have done.";
+    h = k + (bs.tier === "small" ? " small signal paused." : " rule paused.");
+    why = tooSmall ? what + "at your capital and risk per trade the order is smaller than the exchange's minimum order, so it can't be placed. "
+        + "Raise your capital or your risk per trade in Settings to take signals like it."
+      : what + (byNews ? "the news check paused new trades" : "a rule blocked it: " + plain((bs.by || []).join("; ")))
+        + (byNews ? ". No trade: the news can pause or shrink a trade, never create one." : ". No trade.") + " The blocked trade is recorded with what it would have done.";
   }
   if (failed.length) why += " Not checked: " + failed.map((c) => coinOf(c.symbol)).join(", ") + ".";
   const when = checkedLine();
