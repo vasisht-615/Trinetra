@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.4.0-20f946f8a814";
+const BUILD = "1.4.0-e0c485fb1b3a";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -1348,7 +1348,7 @@ function verdictInner() {
 // (its range still includes zero). It is sized at a quarter of normal risk and scored apart from proven signals.
 const isSmall = (c) => !!c && (c.tier === "small" || (c.plan && c.plan.tier === "small"));
 const SMALL_WHY = "Small and unproven: ETH's first-hour Fed rule averaged +0.24R a trade over 39 Fed nights on Binance perpetuals, after costs and funding, "
-  + "but that could still be luck (about 1 chance in 9). So it is a quarter of your normal risk and scored apart from proven signals. "
+  + "but that could still be luck (about 1 chance in 9). So it is sized small (a quarter of your normal risk, or the exchange's minimum order if that is larger, never more than half) and scored apart from proven signals. "
   + "On most Fed nights ETH moves with SOL: taken together they are one bigger bet, not two.";
 function ticketBlock(c, given, example) {
   const cd = c.candidate || {}, plan = given || S.signalPlans[c.symbol] || {};

@@ -18,10 +18,17 @@ This repository is what Netlify deploys:
 - `netlify/functions/watchdog.mjs`: runs every 2 minutes and sends phone alerts through ntfy, even when the app is
   closed: a reminder an hour before each big US release, and the SOL rule's first-hour answer after Fed decisions. It
   reads Coinbase prices (Netlify's servers can't reach Binance), so an alert means "open Trinetra"; the app decides.
-- `tests/`: the watchdog's tests (`node --test tests/*.test.mjs`) and the engine's scenario tests, which run the real
-  `desk.py` pipeline against a scripted exchange with the clock pinned (`python3 -m unittest discover -s tests/engine -p
-  'test_*.py'`; the full news-day matrix is `python3 tests/engine/run_matrix.py`, and `tests/engine/replay_history.py`
-  replays the news rules on real Binance history from data.binance.vision).
+- `tests/`: everything is tested before it ships (details in `docs/PROJECT_REPORT.md`):
+  - `npm ci && node --test tests/*.test.mjs`: the server functions (watchdog, sync, pairing, the Claude feed and
+    connector, the news proxy) against an in-memory store.
+  - `python3 -m unittest discover -s tests/engine -p 'test_*.py'`: the engine's edge cases, chart setups and small
+    signals, through the real `desk.py` pipeline on a scripted exchange with the clock pinned.
+  - `python3 tests/engine/run_matrix.py`: 1,680 news-day scenarios (5 coins, 6 release types, 7 reactions, 8 moments).
+  - `node tests/app/qa.cjs`: the whole app in a real browser (every screen and state, phone to desktop, light and dark,
+    reduced motion), served with the same security headers as Netlify.
+  - On real Binance history (needs `data.binance.vision`): `tests/engine/replay_history.py` (every news rule, release
+    type and coin), `tests/engine/replay_market.py` (the whole engine moment by moment, any timeframe, no look-ahead)
+    and `tests/engine/check_fed_nights.py` (the live pipeline against the replay, Fed night by Fed night).
 - `tools/stamp_build.py`: after editing anything in `site/engine`, re-stamps the checksums and the build id so installed
   apps load the new engine.
 - `netlify.toml`: publish `site/`, no build step; Netlify installs `@netlify/blobs` for the functions.
