@@ -20,33 +20,33 @@ MOMENTS = (-90, -30, 10, 31, 61, 70, 80, 300)
 MOVE_AT_60 = {"flat": 0.0, "up": 0.008, "down": -0.008, "small_up": 0.002, "whipsaw": 0.001, "fake_up": -0.005, "spike_up": 0.030}
 
 
-SMALL = {"ETH"}            # ETH's Fed rule is traded small (positive but unproven): a quarter of normal risk
-FLOOR = {"SOL": 0.025, "ETH": 0.02}
+BASKET = {"BTC", "ETH", "SOL", "XRP", "LINK"}     # the Fed rule trades as one basket: each coin at 15% of normal risk
+FLOOR = {"BTC": 0.015, "ETH": 0.02, "SOL": 0.025, "XRP": 0.025, "LINK": 0.025}
 
 
 def expected_signal(coin, kind, reaction, m):
-    """Only SOL's Fed rule is proven, and ETH's is traded small: each signals from minute 61 to 75 when the first hour
-    moved more than 0.3%. Nothing else ever signals."""
-    if coin in ("SOL", "ETH") and kind == "FOMC" and 61 <= m <= 75 and abs(MOVE_AT_60[reaction]) > 0.003:
+    """Only the Fed rule signals, on the five basket coins, from minute 61 to 75 when the first hour moved more than
+    0.3%. Nothing else ever signals."""
+    if coin in BASKET and kind == "FOMC" and 61 <= m <= 75 and abs(MOVE_AT_60[reaction]) > 0.003:
         return "SIGNAL LONG" if MOVE_AT_60[reaction] > 0 else "SIGNAL SHORT"
     return None
 
 
 def check_signal(res, rel, now, coin="SOL"):
-    """Plan sanity for a SIGNAL: the tested stop and targets, the order window, the shortened hold, and the size (half
-    while the record is new; a quarter, labelled small, for a small rule)."""
+    """Plan sanity for a SIGNAL: the tested stop and targets, the order window, the shortened hold, and the size (15% of
+    normal risk, labelled basket; sized up to the exchange minimum only within half of normal risk)."""
     bad = []
     with open(os.path.join(res["run_dir"], "plan.json")) as fh:
         p = json.load(fh)
     e, s = float(p["entry"]), float(p["stop"])
     dist = abs(e - s) / e
     t1 = float(p["targets"][0]["price"])
-    small = coin in SMALL
+    small = coin in BASKET
     if dist < FLOOR[coin] - 1e-4:                              # prices are rounded to 6 significant digits
         bad.append("stop %.3f%% is inside %s's tested %.1f%% floor" % (dist * 100, coin, FLOOR[coin] * 100))
     tiers = (res.get("tier"), p.get("tier"), (res.get("decision") or {}).get("tier"))
-    if any(small != (t == "small") for t in tiers):
-        bad.append("tier (brief, plan, decision) is %r, expected %s" % (tiers, "small" if small else "none"))
+    if any(small != (t == "basket") for t in tiers):
+        bad.append("tier (brief, plan, decision) is %r, expected %s" % (tiers, "basket" if small else "none"))
     if abs(abs(t1 - e) / abs(e - s) - 1.5) > 1e-3:
         bad.append("first target is %.3fR, not the tested 1.5R" % (abs(t1 - e) / abs(e - s)))
     if not (rel["t"] + 12 * H.HOUR <= p["close_by"] <= rel["t"] + 24 * H.HOUR):
@@ -55,9 +55,11 @@ def check_signal(res, rel, now, coin="SOL"):
     if c.get("expires") != rel["t"] + 75 * H.MIN:
         bad.append("order deadline %s is not release + 75 min" % c.get("expires"))
     risk = float(p.get("max_loss_at_stop") or 0)
-    cap = 1000 * 0.005 * (0.25 if small else 0.5) * 1.06               # 0.5% of 1000 USDT: a quarter if small, half while unproven
+    cap = 1000 * 0.005 * ((0.5 if p.get("min_order_lift") else 0.15) if small else 0.5) * 1.06   # 0.5% of 1000 USDT: 15% in the basket
     if not (0 < risk <= cap):
-        bad.append("loss at stop %.2f USDT is over the %s cap %.2f USDT" % (risk, "small (quarter)" if small else "half-size", cap))
+        bad.append("loss at stop %.2f USDT is over the %s cap %.2f USDT" % (risk, "basket" if small else "half-size", cap))
+    if small and not p.get("min_order_lift") and risk < 1000 * 0.005 * 0.15 * 0.94:
+        bad.append("loss at stop %.2f USDT is under the basket share" % risk)
     if p.get("leverage", 1) > 5:
         bad.append("leverage %s over the 5x cap" % p.get("leverage"))
     return bad

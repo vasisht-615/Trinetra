@@ -15,20 +15,24 @@ This repository is what Netlify deploys:
 - `netlify/functions/pair.mjs`: links a new device with an 8-character code (10 minutes, one use). The sync code is
   left here encrypted with a key made from the short code, so the server never sees either code.
 - `netlify/functions/feed.mjs`: fetches news feeds that refuse browser requests (CoinDesk).
-- `netlify/functions/watchdog.mjs`: runs every 2 minutes and sends phone alerts through ntfy, even when the app is
-  closed: a reminder an hour before each big US release, and the SOL rule's first-hour answer after Fed decisions. It
+- `netlify/functions/watchdog.mjs`: runs every 2 minutes and sends phone alerts through ntfy (or Telegram), even when
+  the app is closed: a reminder an hour before each big US release; after Fed decisions, the Fed basket's answer on all
+  five coins with each order (repeated once unless you tap "I'm on it"); and on Mondays, the weekly trend's changes. It
   reads Coinbase prices (Netlify's servers can't reach Binance), so an alert means "open Trinetra"; the app decides.
+- `netlify/functions/alerts.mjs`: the "Send a test alert" button in Settings, and the "I'm on it" button in alerts.
 - `tests/`: everything is tested before it ships (details in `docs/PROJECT_REPORT.md`):
   - `npm ci && node --test tests/*.test.mjs`: the server functions (watchdog, sync, pairing, the Claude feed and
     connector, the news proxy) against an in-memory store.
-  - `python3 -m unittest discover -s tests/engine -p 'test_*.py'`: the engine's edge cases, chart setups and small
-    signals, through the real `desk.py` pipeline on a scripted exchange with the clock pinned.
+  - `python3 -m unittest discover -s tests/engine -p 'test_*.py'`: the engine's edge cases, chart setups, the Fed
+    basket and the weekly trend, through the real `desk.py` pipeline on a scripted exchange with the clock pinned.
   - `python3 tests/engine/run_matrix.py`: 1,680 news-day scenarios (5 coins, 6 release types, 7 reactions, 8 moments).
   - `node tests/app/qa.cjs`: the whole app in a real browser (every screen and state, phone to desktop, light and dark,
     reduced motion), served with the same security headers as Netlify.
   - On real Binance history (needs `data.binance.vision`): `tests/engine/replay_history.py` (every news rule, release
     type and coin), `tests/engine/replay_market.py` (the whole engine moment by moment, any timeframe, no look-ahead)
-    and `tests/engine/check_fed_nights.py` (the live pipeline against the replay, Fed night by Fed night).
+    and `tests/engine/check_fed_nights.py` (the live pipeline against the replay, Fed night by Fed night, all five
+    coins). For the weekly trend: `tests/engine/trend_backtest.py --write` (the long test the app shows, made with the
+    engine's own code) and `tests/engine/check_trend_live.py` (the live path against the archive, week by week).
 - `tools/stamp_build.py`: after editing anything in `site/engine`, re-stamps the checksums and the build id so installed
   apps load the new engine.
 - `netlify.toml`: publish `site/`, no build step; Netlify installs `@netlify/blobs` for the functions.
@@ -43,8 +47,10 @@ This repository is what Netlify deploys:
 3. **Claude:** in Trinetra, Settings, Set up the connector. Then in Claude, Settings, Connectors, Add custom connector:
    name `Trinetra` and the private URL Trinetra shows (leave the OAuth fields empty). Turn it on in chats under +,
    Connectors, and add it to your scheduled research tasks.
-4. **Phone alerts (optional):** install the ntfy app and subscribe to a long random topic name (it works as a password,
-   so keep it private). In Netlify, Site configuration, Environment variables, add `NTFY_TOPIC` with that name, then
-   deploy again. The first alert, "Trinetra alerts are on", confirms it works.
+4. **Phone alerts (recommended):** install the ntfy app and subscribe to a long random topic name (it works as a
+   password, so keep it private). In Netlify, Site configuration, Environment variables, add `NTFY_TOPIC` with that
+   name, then deploy again. In ntfy, let the topic override Do Not Disturb, so Fed nights ring. Then, in Trinetra,
+   Settings, Alerts and reminders, tap **Send a test alert**. Optional: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` send
+   the same alerts to Telegram; `TREND_ALERTS=off` stops the Monday trend alerts.
 
 

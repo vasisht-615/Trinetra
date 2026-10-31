@@ -1,10 +1,10 @@
-"""Edge cases around the one proven rule (SOL after a Fed decision), run through the full engine pipeline.
+"""Edge cases around the Fed-night rule (the five-coin basket) and the weekly trend part, run through the full engine.
 
     python3 -m unittest discover -s tests/engine -p 'test_*.py'
 
 Each test sets up one situation (a news check, a losing day, an outage, a calendar problem...) and checks that the engine
 does what it is designed to do. The baseline is SOL falling 0.8% in the first hour after the 9 Dec 2026 Fed decision,
-read at minute 61, which signals a short when nothing else is in the way.
+read at minute 61, which signals a short (a Fed-basket trade at 15% of normal risk) when nothing else is in the way.
 """
 import json
 import os
@@ -70,7 +70,8 @@ class Baseline(unittest.TestCase):
         self.assertEqual(decision(res), "SIGNAL SHORT")
         p = plan_of(res)
         self.assertGreaterEqual(abs(p["stop"] / p["entry"] - 1), 0.025 - 1e-4)
-        self.assertLessEqual(p["max_loss_at_stop"], 2.5 * 1.06)               # 0.5% of 1000 USDT, halved while unproven
+        self.assertAlmostEqual(p["max_loss_at_stop"], 0.75, delta=0.05)       # 0.5% of 1000 USDT, 15% of it in the Fed basket
+        self.assertEqual(p.get("tier"), "basket")
 
     def test_minute_boundaries(self):
         self.assertNotEqual(decision(sol(59)[1]), "SIGNAL SHORT")             # minute 60 not closed yet
@@ -139,7 +140,7 @@ class RiskLimits(unittest.TestCase):
     def test_inr_capital(self):
         res = sol(home=home_with(config={"equity": 100000, "equity_currency": "INR", "usdt_inr": 89}))[1]
         self.assertEqual(decision(res), "SIGNAL SHORT")
-        self.assertAlmostEqual(plan_of(res)["max_loss_at_stop"], 100000 / 89.0 * 0.005 * 0.5, delta=0.2)
+        self.assertAlmostEqual(plan_of(res)["max_loss_at_stop"], 100000 / 89.0 * 0.005 * 0.15, delta=0.05)
 
 
 class DataAndCalendar(unittest.TestCase):
@@ -201,10 +202,11 @@ class WholeDay(unittest.TestCase):
         ex = H.ScenarioExchange(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)])
         code, res = H.run(["today"], T + 61 * H.MIN, ex)
         self.assertEqual(code, 0, res)
-        # SOL's proven rule and ETH's small one, checked first, and nothing else
-        self.assertEqual([c["symbol"] for c in res["signals"]], ["SOLUSDT", "ETHUSDT"])
-        self.assertEqual([c["symbol"] for c in res["coins"][:2]], ["SOLUSDT", "ETHUSDT"])
-        self.assertEqual([c.get("tier") for c in res["signals"]], [None, "small"])
+        # the Fed basket's five coins, SOL (whose own rule is the tested one) first, all at the basket share
+        order = ["SOLUSDT", "BTCUSDT", "ETHUSDT", "XRPUSDT", "LINKUSDT"]
+        self.assertEqual([c["symbol"] for c in res["signals"]], order)
+        self.assertEqual([c["symbol"] for c in res["coins"][:5]], order)
+        self.assertEqual([c.get("tier") for c in res["signals"]], ["basket"] * 5)
 
     def test_one_broken_coin_does_not_hide_the_others(self):
         class NoFoo(H.ScenarioExchange):
@@ -222,101 +224,230 @@ class WholeDay(unittest.TestCase):
         for m in (61, 63):
             ex = H.ScenarioExchange(T + m * H.MIN, T, "down", calendar=[("FOMC", T)])
             H.run(["today", "--coins", "SOL"], T + m * H.MIN, ex, home=home)
-        rows = [r for r in desk.journal_load(home) if r.get("decision") == "TRACK" and r.get("track_kind") == "signal"]
+        rows = [r for r in desk.journal_load(home) if r.get("decision") == "TRACK" and r.get("track_kind") == "fed basket"]
         self.assertEqual(len(rows), 1, rows)
 
 
-def eth(minutes=61, reaction="down", home=None):
+def coin(sym, minutes=61, reaction="down", home=None):
     ex = H.ScenarioExchange(T + int(minutes * H.MIN), T, reaction, calendar=[("FOMC", T)])
-    return H.run(["brief", "ETHUSDT"], T + int(minutes * H.MIN), ex, home=home)
+    return H.run(["brief", sym], T + int(minutes * H.MIN), ex, home=home)
 
 
-class SmallSignals(unittest.TestCase):
-    """ETH's Fed rule is traded small: positive on its history and on Binance perpetuals, not proven."""
-    QUARTER = 1000 * 0.005 * 0.25          # the default config: 1,000 USDT, 0.5% a trade, a quarter of it
+class Basket(unittest.TestCase):
+    """Fed nights trade as one basket of the five coins: one shared estimate, each coin at 15% of normal risk."""
+    PART = 1000 * 0.005 * 0.15          # the default config: 1,000 USDT, 0.5% a trade, 15% of it
+    FLOOR = {"BTC": 1.5, "ETH": 2.0, "SOL": 2.5, "XRP": 2.5, "LINK": 2.5}
 
-    def test_eth_signals_small_at_a_quarter_of_normal_risk(self):
-        code, res = eth()
-        self.assertEqual(code, 0, res)
-        self.assertEqual(decision(res), "SIGNAL SHORT")
-        self.assertEqual(res.get("tier"), "small")
-        p = plan_of(res)
-        self.assertEqual(p.get("tier"), "small")
-        self.assertAlmostEqual(p["max_loss_at_stop"], self.QUARTER, delta=self.QUARTER * 0.06)
-        self.assertGreaterEqual(p["stop_distance_pct"], 2.0 - 0.01)          # ETH's tested 2% floor
-        self.assertIn("small signal", res["decision"]["why"])
+    def test_every_coin_signals_at_its_basket_share(self):
+        for c in desk.BASKET_COINS:
+            code, res = coin(c + "USDT")
+            self.assertEqual(code, 0, res)
+            self.assertEqual(decision(res), "SIGNAL SHORT", c)
+            self.assertEqual(res.get("tier"), "basket", c)
+            p = plan_of(res)
+            self.assertEqual(p.get("tier"), "basket", c)
+            if p.get("min_order_lift"):          # a share under the exchange minimum is sized up to it, never past half risk
+                self.assertLessEqual(p["max_loss_at_stop"], 1000 * 0.005 * 0.5 * 1.02, c)
+            else:
+                self.assertAlmostEqual(p["max_loss_at_stop"], self.PART, delta=self.PART * 0.06, msg=c)
+            self.assertGreaterEqual(p["stop_distance_pct"], self.FLOOR[c] - 0.01, c)
+            self.assertIn("Fed basket", res["decision"]["why"])
 
-    def test_switched_off_means_no_trade(self):
-        code, res = eth(home=home_with(config={"small_signals": "false"}))
-        self.assertEqual(decision(res), "NO TRADE")
-        self.assertFalse(res.get("tier"))
+    def test_switched_off_leaves_only_sols_own_rule(self):
+        home = home_with(config={"fed_basket": "false"})
+        for c in desk.BASKET_COINS:
+            code, res = coin(c + "USDT", home=home)
+            self.assertFalse(res.get("tier"), c)
+            self.assertEqual(decision(res), "SIGNAL SHORT" if c == "SOL" else "NO TRADE", c)
+        self.assertLessEqual(plan_of(coin("SOLUSDT", home=home)[1])["max_loss_at_stop"], 2.5 * 1.06)   # its own size, halved while unproven
 
     def test_elevated_news_halves_it_again(self):
-        code, res = eth(home=home_with(news=dict(NEWS, market={"level": "elevated", "reasons": NEWS["market"]["reasons"]})))
+        home = home_with(config={"equity": "10000"})
+        full = plan_of(coin("LINKUSDT", home=home)[1])["max_loss_at_stop"]
+        code, res = coin("LINKUSDT", home=home_with(config={"equity": "10000"},
+                                                    news=dict(NEWS, market={"level": "elevated", "reasons": NEWS["market"]["reasons"]})))
         self.assertEqual(decision(res), "SIGNAL SHORT")
-        self.assertAlmostEqual(plan_of(res)["max_loss_at_stop"], self.QUARTER / 2, delta=self.QUARTER * 0.04)
+        self.assertAlmostEqual(plan_of(res)["max_loss_at_stop"], full / 2, delta=full * 0.06)
 
     def test_extreme_news_pauses_it_and_says_so(self):
-        code, res = eth(home=home_with(news=NEWS))
+        code, res = coin("ETHUSDT", home=home_with(news=NEWS))
         self.assertEqual(decision(res), "NO TRADE")
         self.assertTrue(res.get("blocked_signal"))
-        self.assertEqual(res["blocked_signal"].get("tier"), "small")
+        self.assertEqual(res["blocked_signal"].get("tier"), "basket")
 
     def test_no_signal_before_the_hour_or_after_the_window(self):
         for m in (59, 76, 300):
-            self.assertNotEqual(str(decision(eth(minutes=m)[1])), "SIGNAL SHORT", m)
+            self.assertNotEqual(str(decision(coin("XRPUSDT", minutes=m)[1])), "SIGNAL SHORT", m)
 
     def test_tracked_apart_and_never_proves_the_edge(self):
         home = home_with()
-        eth(home=home)
+        coin("ETHUSDT", home=home)
         kinds = [r.get("track_kind") for r in desk.journal_load(home) if r.get("decision") == "TRACK"]
-        self.assertIn("small signal", kinds)
+        self.assertIn("fed basket", kinds)
         self.assertNotIn("signal", kinds)
-        # 60 winning small trades logged by hand: the edge status still counts none of them
+        # 60 winning basket trades logged by hand: the edge status still counts none of them
         rows = []
         for i in range(60):
             r = trade(T - (90 - i) * H.HOUR, decision="TAKE", R=1.3, pnl=2.0, symbol="ETHUSDT", setup="momentum_after_60m")
-            r["tier"] = "small"
+            r["tier"] = "basket"
             rows.append(r)
         st = desk.probation_status(rows, desk.DEFAULTS)
         self.assertEqual(st["status"], "UNPROVEN")
         self.assertEqual(st["n"], 0)
 
-    def test_a_logged_small_trade_keeps_its_tier(self):
+    def test_a_logged_basket_trade_keeps_its_tier(self):
         home = home_with()
-        code, res = eth(home=home)
+        code, res = coin("ETHUSDT", home=home)
         ex = H.ScenarioExchange(T + 62 * H.MIN, T, "down", calendar=[("FOMC", T)])
         code, out = H.run(["journal", "add", "--run", res["run_dir"], "--prob", "0.5", "--decision", "TAKE", "--setup", "momentum_after_60m",
                            "--intensity", "quick", "--fill", str(plan_of(res)["entry"])], T + 62 * H.MIN, ex, home=home)
         self.assertEqual(code, 0, out)
         took = [r for r in desk.journal_load(home) if r.get("decision") == "TAKE"]
-        self.assertEqual([r.get("tier") for r in took], ["small"])
+        self.assertEqual([r.get("tier") for r in took], ["basket"])
 
     def test_a_small_account_is_sized_up_to_the_exchange_minimum_within_half_risk(self):
-        # 5,000 INR at 1%: a quarter is an ETH order under the 5 USDT minimum; the smallest size that clears it risks less than half
+        # 5,000 INR at 1%: 15% is an ETH order under the 5 USDT minimum; the smallest size that clears it risks less than half
         home = home_with(config={"equity": "5000", "equity_currency": "INR", "usdt_fx": "95.08", "risk_per_trade_pct": "1", "max_leverage": "10"})
-        code, res = eth(home=home)
+        code, res = coin("ETHUSDT", home=home)
         self.assertEqual(decision(res), "SIGNAL SHORT", res.get("decision"))
         p = plan_of(res)
         self.assertGreaterEqual(p["notional"], 5.0)
-        self.assertTrue(0.25 < p["min_order_lift"] <= 0.5, p.get("min_order_lift"))
+        self.assertTrue(0.15 < p["min_order_lift"] <= 0.5, p.get("min_order_lift"))
         self.assertLessEqual(p["max_loss_at_stop"], 5000 / 95.08 * 0.01 * 0.5 * 1.02)
         self.assertTrue(any("exchange minimum" in n for n in p["notes"]))
 
     def test_too_small_even_at_half_risk_is_blocked_and_says_what_to_change(self):
         home = home_with(config={"equity": "5000", "equity_currency": "INR", "usdt_fx": "95.08", "risk_per_trade_pct": "0.25", "max_leverage": "10"})
-        code, res = eth(home=home)
+        code, res = coin("ETHUSDT", home=home)
         self.assertEqual(decision(res), "NO TRADE")
         self.assertTrue(any("exchange minimum" in b for b in res["decision"]["blocks"]))
         self.assertTrue(any("raise your capital or risk per trade" in n for n in plan_of(res)["notes"]))
-        self.assertEqual((res.get("blocked_signal") or {}).get("tier"), "small")
+        self.assertEqual((res.get("blocked_signal") or {}).get("tier"), "basket")
 
-    def test_other_coins_never_signal_small(self):
-        for coin in ("BTCUSDT", "XRPUSDT", "LINKUSDT"):
-            ex = H.ScenarioExchange(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)])
-            code, res = H.run(["brief", coin], T + 61 * H.MIN, ex)
-            self.assertEqual(decision(res), "NO TRADE", coin)
-            self.assertFalse(res.get("tier"), coin)
+    def test_coins_outside_the_basket_never_signal(self):
+        self.assertEqual(desk.basket_rule("DOGEUSDT", "FOMC", "momentum_after_60m"), None)
+        self.assertEqual(desk.basket_rule("ETHUSDT", "CPI", "momentum_after_60m"), None)
+        self.assertEqual(desk.basket_rule("ETHUSDT", "FOMC", "spike_fade_24h"), None)
+        self.assertEqual(desk.basket_rule("ETHUSDT", "FOMC", "momentum_after_60m", dict(desk.DEFAULTS, fed_basket=False)), None)
+        self.assertTrue(desk.basket_rule("LINKUSDT", "FOMC", "momentum_after_60m"))
+
+
+def days(closes, start="2024-01-01"):
+    """Daily bars from closes, from a UTC date."""
+    t0 = desk.day_ms(start)
+    return [{"t": t0 + k * desk.DAY_MS, "o": c, "h": c, "l": c, "c": c, "v": 1.0, "T": t0 + (k + 1) * desk.DAY_MS - 1}
+            for k, c in enumerate(closes)]
+
+
+class Trend(unittest.TestCase):
+    """The weekly trend part: five trend lengths vote, long or out, sized to 30% a year of swings, checked on Sundays."""
+
+    def test_votes_and_size(self):
+        up = [100.0 * 1.002 ** k for k in range(200)]
+        self.assertEqual(desk.trend_votes(up, 199), [1, 1, 1, 1, 1])
+        self.assertEqual(desk.trend_votes(up[::-1], 199), [-1, -1, -1, -1, -1])
+        var = (0.03) ** 2                                     # 3% a day is about 57% a year: the size is cut to 30/57
+        self.assertAlmostEqual(desk.trend_target([1] * 5, var), (0.30 / 365 ** 0.5) / 0.03, places=6)
+        self.assertEqual(desk.trend_target([1] * 5, 1e-6), 1.0)                       # calm: never above 1 (no leverage)
+        self.assertAlmostEqual(desk.trend_target([1, 1, 1, -1, -1], 1e-6), 0.2)      # 3 of 5 up: a fifth
+        self.assertEqual(desk.trend_target([1, 1, -1, -1, -1], 1e-6), 0.0)           # 2 of 5 up: out, never short
+
+    def test_band_and_actions(self):
+        self.assertTrue(desk.trend_moves(0.0, 0.05))                  # in or out always trades
+        self.assertTrue(desk.trend_moves(0.4, 0.0))
+        self.assertFalse(desk.trend_moves(0.4, 0.45))                 # a change under a quarter waits
+        self.assertTrue(desk.trend_moves(0.4, 0.55))
+        self.assertFalse(desk.trend_moves(0.1, 0.16))                 # small sizes: a quarter of 0.25 at least
+        self.assertEqual([desk.trend_action(a, b) for a, b in ((0, .3), (.3, 0), (.3, .5), (.5, .3), (.3, .3), (0, 0))],
+                         ["BUY", "SELL ALL", "ADD", "TRIM", "HOLD", "OUT"])
+
+    def test_checks_run_at_the_sunday_close_and_trade_from_monday(self):
+        closes = [100.0 * 1.003 ** k for k in range(400)]
+        checks, daily, last = desk.trend_path(days(closes), cost=0.001)
+        self.assertTrue(checks)
+        self.assertTrue(all(desk.weekday_of(c["t"]) == 0 for c in checks))       # each check is at Monday 00:00 UTC
+        self.assertEqual(checks[0]["action"], "BUY")
+        first = checks[0]["t"]
+        self.assertEqual(daily[0][0], first)                     # the first result is Monday's, at the new size
+        self.assertAlmostEqual(daily[0][1], checks[0]["w"] * 0.003 - checks[0]["w"] * 0.001, places=9)
+        self.assertEqual(desk.trend_path(days(closes), weekday=2)[0][0]["t"] % desk.WEEK_MS,
+                         (desk.MONDAY_OFFSET_MS + 3 * desk.DAY_MS) % desk.WEEK_MS)          # Wednesday's close: Thursday 00:00
+
+    def test_a_day_late_trades_at_mondays_close(self):
+        closes = [100.0] * 170 + [100.0 * 1.01 ** k for k in range(1, 60)]
+        on_time = desk.trend_path(days(closes))[1]
+        late = desk.trend_path(days(closes), lag=1)[1]
+        first = next(i for i, x in enumerate(on_time) if x[2] > 0)
+        self.assertEqual(late[first][2], 0.0)                     # still out on Monday
+        self.assertGreater(late[first + 1][2], 0.0)               # in from Tuesday
+
+    def test_a_long_pays_funding(self):
+        closes = [100.0 * 1.003 ** k for k in range(300)]
+        b = days(closes)
+        free = sum(x[1] for x in desk.trend_path(b)[1])
+        fund = {x["t"] // desk.DAY_MS: 0.0003 for x in b}
+        paid = sum(x[1] for x in desk.trend_path(b, fund)[1])
+        self.assertLess(paid, free)
+
+    def test_next_check_is_the_coming_monday(self):
+        for when in ("2026-10-31 12:00", "2026-11-01 23:59", "2026-11-02 00:00", "2026-11-04 08:00"):
+            now = int(desk.dt.datetime.strptime(when, "%Y-%m-%d %H:%M").replace(tzinfo=desk.dt.timezone.utc).timestamp() * 1000)
+            nxt = desk.next_trend_check(now)
+            self.assertEqual(desk.weekday_of(nxt), 0, when)
+            self.assertTrue(0 < nxt - now <= desk.WEEK_MS, when)
+            self.assertEqual(nxt % desk.DAY_MS, 0, when)
+
+    def test_sizes_round_down_and_flag_the_minimum(self):
+        lot = {"step": 0.001, "min_qty": 0.001, "min_notional": 100.0}
+        s = desk.trend_size(500.0, 0.4, 90000.0, lot)              # 200 USDT of BTC at 90,000
+        self.assertEqual(s["usdt"], 200.0)
+        self.assertEqual(s["qty"], 0.002)                          # 0.00222 rounded down to the step
+        self.assertFalse(s["below_min"])
+        s = desk.trend_size(100.0, 0.2, 90000.0, lot)              # 20 USDT: under the 100 USDT minimum
+        self.assertTrue(s["below_min"])
+        self.assertEqual(s["qty"], 0.0)
+        self.assertEqual(s["qty_exact"], desk.sig(20.0 / 90000.0, 3))
+        self.assertFalse(desk.trend_size(100.0, 0.0, 90000.0, lot)["below_min"])      # out: nothing to place
+
+    def test_report_on_the_fake_exchange(self):
+        ex = H.ScenarioExchange(T - 3 * H.HOUR, T, "flat", calendar=[("FOMC", T)])
+        code, R = H.run(["trend"], T - 3 * H.HOUR, ex, home=home_with(config={"trend_share": "1"}))
+        self.assertEqual(code, 0, R)
+        self.assertEqual(R["errors"], [])
+        self.assertEqual([c["coin"] for c in R["coins"]], ["BTC", "ETH", "SOL"])
+        self.assertAlmostEqual(R["per_coin"], 1000.0 / 3, places=1)
+        for c in R["coins"]:
+            self.assertAlmostEqual(c["size"]["usdt"], 1000.0 / 3 * c["w"], delta=1000.0 / 3 * 0.0005 + 0.01)   # w is shown to 3 places
+            self.assertEqual(c["state"], "HOLD" if c["w"] > 0 else "OUT")
+            self.assertLessEqual(c["w"], 1.0)
+        self.assertEqual(desk.weekday_of(R["next_check"]), 0)
+        self.assertTrue(R["model"]["weeks"] and R["model"]["curve"])
+        self.assertTrue(R["tested"]["portfolio"]["growth_a_year_pct"])
+
+    def test_today_carries_it_and_a_failure_cannot_hide_the_day(self):
+        ex = H.ScenarioExchange(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)])
+        code, res = H.run(["today", "--coins", "SOL"], T + 61 * H.MIN, ex)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(len(res["trend"]["coins"]), 3)
+
+        class NoDaily(H.ScenarioExchange):                     # the trend's long daily read fails; the coin's own bars still come
+            def __call__(self, url):
+                q = dict(desk.urllib.parse.parse_qsl(desk.urllib.parse.urlparse(url).query))
+                if q.get("interval") == "1d" and int(q.get("limit", 0)) > 900:
+                    return None
+                return H.ScenarioExchange.__call__(self, url)
+        code, res = H.run(["today", "--coins", "SOL"], T + 61 * H.MIN, NoDaily(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)]))
+        self.assertEqual(code, 0, res)
+        self.assertEqual([c["symbol"] for c in res["signals"]], ["SOLUSDT"])          # the Fed basket still signals
+        self.assertEqual(res["trend"]["coins"], [])
+        self.assertTrue(any("daily prices" in e for e in res["trend"]["errors"]))
+        code, res = H.run(["today", "--coins", "SOL"], T + 61 * H.MIN, ex, home=home_with(config={"trend": "false"}))
+        self.assertNotIn("trend", res)                                                  # switched off: not read at all
+
+    def test_settings_are_bounded(self):
+        for bad in ("0", "0.05", "1.5", "x"):
+            code, out = H.run(["config", "set", "trend_share", bad], T, H.ScenarioExchange(T, T))
+            self.assertNotEqual(code, 0, bad)
 
 
 if __name__ == "__main__":

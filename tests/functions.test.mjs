@@ -66,9 +66,11 @@ test("pair: a code works once, expires after 10 minutes, and can't be reused whi
 
 const TOKEN = "T".repeat(40), AUTH = { Authorization: "Bearer " + TOKEN };
 const FEED = { v: 1, checked_at: Date.now(), engine: "1.4.0", text: "DESK TODAY ...", settings: { watchlist: ["BTC", "ETH", "SOL"] },
-  today: { coins: [{ symbol: "SOLUSDT", decision: "SIGNAL LONG" }, { symbol: "ETHUSDT", decision: "SIGNAL LONG", tier: "small" }],
-    signals: [{ symbol: "SOLUSDT", decision: "SIGNAL LONG", candidate: { setup: "momentum_after_60m", side: "long", entry: 150, stop: 146.25, target1: 155.6 }, plan: { qty: 0.09, notional: 13.5, leverage: 1, max_loss_at_stop: 0.26 } },
-      { symbol: "ETHUSDT", decision: "SIGNAL LONG", tier: "small", candidate: { setup: "momentum_after_60m", side: "long", entry: 2200, stop: 2156, target1: 2266 }, plan: { qty: 0.003 } }] },
+  today: { coins: [{ symbol: "SOLUSDT", decision: "SIGNAL LONG", tier: "basket" }, { symbol: "ETHUSDT", decision: "SIGNAL LONG", tier: "basket" }],
+    signals: [{ symbol: "SOLUSDT", decision: "SIGNAL LONG", tier: "basket", candidate: { setup: "momentum_after_60m", side: "long", entry: 150, stop: 146.25, target1: 155.6 }, plan: { qty: 0.09, notional: 13.5, leverage: 1, max_loss_at_stop: 0.26 } },
+      { symbol: "ETHUSDT", decision: "SIGNAL LONG", tier: "basket", candidate: { setup: "momentum_after_60m", side: "long", entry: 2200, stop: 2156, target1: 2266 }, plan: { qty: 0.003 } }],
+    trend: { next_check: Date.UTC(2026, 10, 2), share: 0.5, done: false, model: { since: "2025-01-05", total_pct: -5.9 },
+      coins: [{ coin: "BTC", state: "HOLD", action: "TRIM", ups: 3, w: 0.2 }, { coin: "ETH", state: "OUT", action: "OUT", ups: 2, w: 0 }, { coin: "SOL", state: "HOLD", action: "HOLD", ups: 3, w: 0.109 }] } },
   packets: { SOL: "DESK PACKET SOL" }, upcoming: [], record: "Engine signals: none", health: [] };
 
 test("claude feed: the app's data is stored sealed under a hash of the token, and only that token reads it", async () => {
@@ -84,7 +86,7 @@ test("claude feed: the app's data is stored sealed under a hash of the token, an
   assert.equal(s.m.size, 0);
 });
 
-test("connector: tools list, status and today label a small signal, a wrong token and bad JSON-RPC are refused", async () => {
+test("connector: tools list, status and today label the Fed basket and the trend, a wrong token and bad JSON-RPC are refused", async () => {
   const s = memStore();
   await claude(req("PUT", "/api/claude/feed", FEED, AUTH), s);
   const rpc = async (m, auth = AUTH) => mcp(req("POST", "/api/mcp", m, auth), s);
@@ -93,11 +95,13 @@ test("connector: tools list, status and today label a small signal, a wrong toke
   r = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   assert.ok((await body(r)).result.tools.some((t) => t.name === "vigil_today"));
   r = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "vigil_status", arguments: {} } });
-  assert.match((await body(r)).result.content[0].text, /Signals now: SOL SIGNAL LONG, ETH SIGNAL LONG \(small\)/);
+  const status = (await body(r)).result.content[0].text;
+  assert.match(status, /Signals now: SOL SIGNAL LONG \(Fed basket\), ETH SIGNAL LONG \(Fed basket\)/);
+  assert.match(status, /Weekly trend .*: BTC HOLD \(3\/5 up\), ETH OUT \(2\/5 up\), SOL HOLD \(3\/5 up\); this week: trim BTC; the rule since 2025-01-05: -5.9%/);
   r = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "vigil_today", arguments: {} } });
   const today = (await body(r)).result.content[0].text;
-  assert.match(today, /^SIGNAL SOL LONG/m);
-  assert.match(today, /SMALL SIGNAL \(positive but unproven.*\) ETH LONG/);
+  assert.match(today, /^FED BASKET SIGNAL \(one of five coins.*\) SOL LONG/m);
+  assert.match(today, /FED BASKET SIGNAL \(.*15% of normal risk each.*\) ETH LONG/);
   r = await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "vigil_coin", arguments: { symbol: "SOLUSDT" } } });
   assert.match((await body(r)).result.content[0].text, /DESK PACKET SOL/);
   r = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "no_such_tool" } });

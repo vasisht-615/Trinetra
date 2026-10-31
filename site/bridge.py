@@ -396,7 +396,7 @@ def _ics_fold(line):
 
 
 def fed_nights_ics():
-    """A calendar file with every upcoming Fed decision and a reminder to run DESK an hour later (the SOL rule's read)."""
+    """A calendar file with every upcoming Fed decision and a reminder to run DESK an hour later (the Fed basket's read)."""
     now = desk.now_ms()
     rows = [r for r in desk.load_release_calendar().get("releases") or [] if r["kind"] == "FOMC" and r["t"] > now]
     L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//crypto-futures-desk//Fed nights//EN", "CALSCALE:GREGORIAN"]
@@ -405,7 +405,7 @@ def fed_nights_ics():
         for uid, start, minutes, title, text in (
                 ("fomc-%s" % r["date"], r["t"], 30, "US Fed rate decision (FOMC)",
                  "No new entries from 60 minutes before to 30 minutes after. Source: federalreserve.gov."),
-                ("desk-%s" % r["date"], t_read, 15, "DESK: run Today now (SOL Fed rule, 15-minute window)",
+                ("desk-%s" % r["date"], t_read, 15, "DESK: run Today now (Fed basket, 15-minute window)",
                  "Open the app and run Today. A signal shows only if every rule passes. Not financial advice.")):
             L += ["BEGIN:VEVENT", "UID:%s@crypto-futures-desk" % uid, "DTSTAMP:%s" % _ics_time(now), "DTSTART:%s" % _ics_time(start),
                   "DTEND:%s" % _ics_time(start + minutes * 60000), "SUMMARY:%s" % _ics_text(title), "DESCRIPTION:%s" % _ics_text(text),

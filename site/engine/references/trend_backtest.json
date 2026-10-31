@@ -1,0 +1,251 @@
+{
+ "made_by": "tests/engine/trend_backtest.py (desk.py 1.5.0 trend_path, the function the app runs live)",
+ "source": "Binance USD-M perpetual daily bars and funding from data.binance.vision",
+ "rule": "Each Monday at 00:00 UTC (05:30 IST), when Sunday's daily bar closes, five trend lengths vote for each coin: is the price above where it was 10, 20, 40, 80 and 160 days ago? With 3 or more up, hold it; with 2 or fewer, stay out. Never short. The size grows with the up-votes and shrinks when the coin swings hard (it aims at about 30% a year of swings), and it is never more than the coin's share at 1x, so there is no stop: the weekly check is the exit. A size changes only when it moves by more than a quarter.",
+ "params": {
+  "coins": [
+   "BTC",
+   "ETH",
+   "SOL"
+  ],
+  "lookbacks_days": [
+   10,
+   20,
+   40,
+   80,
+   160
+  ],
+  "vol_target_a_year": 0.3,
+  "ewma": 0.94,
+  "cap": 1.0,
+  "band": 0.25,
+  "check": "Sunday close (Monday 00:00 UTC)"
+ },
+ "costs": "taker fee 0.063% + 18% GST + slippage (BTC 0.03%, ETH 0.04%, SOL 0.10%) on each change; funding paid while long",
+ "from": "2020-06-15",
+ "to": "2026-10-29",
+ "portfolio": {
+  "days": 2327,
+  "total_pct": 145.25,
+  "growth_a_year_pct": 15.11,
+  "avg_a_year_pct": 15.19,
+  "vol_pct": 14.98,
+  "sharpe": 1.01,
+  "worst_drop_pct": -27.86
+ },
+ "sharpe_90": [
+  0.3,
+  1.73
+ ],
+ "years": {
+  "2020": {
+   "total_pct": 52.26,
+   "worst_drop_pct": -7.93,
+   "days": 200
+  },
+  "2021": {
+   "total_pct": 38.56,
+   "worst_drop_pct": -10.28,
+   "days": 365
+  },
+  "2022": {
+   "total_pct": -8.64,
+   "worst_drop_pct": -9.57,
+   "days": 365
+  },
+  "2023": {
+   "total_pct": 12.84,
+   "worst_drop_pct": -20.07,
+   "days": 365
+  },
+  "2024": {
+   "total_pct": 19.65,
+   "worst_drop_pct": -13.69,
+   "days": 366
+  },
+  "2025": {
+   "total_pct": -2.13,
+   "worst_drop_pct": -9.02,
+   "days": 365
+  },
+  "2026": {
+   "total_pct": -3.69,
+   "worst_drop_pct": -5.45,
+   "days": 301
+  }
+ },
+ "coins": {
+  "BTC": {
+   "days": 2327,
+   "total_pct": 127.93,
+   "growth_a_year_pct": 13.79,
+   "avg_a_year_pct": 14.56,
+   "vol_pct": 18.14,
+   "sharpe": 0.8,
+   "worst_drop_pct": -31.77,
+   "first": "2020-06-15",
+   "trades_a_year": 22.7,
+   "in_market_pct": 56.4,
+   "avg_size": 0.411,
+   "cost_per_trade_pct": 0.1043
+  },
+  "ETH": {
+   "days": 2327,
+   "total_pct": 70.41,
+   "growth_a_year_pct": 8.72,
+   "avg_a_year_pct": 9.98,
+   "vol_pct": 18.02,
+   "sharpe": 0.55,
+   "worst_drop_pct": -27.61,
+   "first": "2020-06-15",
+   "trades_a_year": 25.3,
+   "in_market_pct": 57.5,
+   "avg_size": 0.286,
+   "cost_per_trade_pct": 0.1143
+  },
+  "SOL": {
+   "days": 2070,
+   "total_pct": 81.54,
+   "growth_a_year_pct": 11.09,
+   "avg_a_year_pct": 11.84,
+   "vol_pct": 16.34,
+   "sharpe": 0.72,
+   "worst_drop_pct": -31.3,
+   "first": "2021-02-22",
+   "trades_a_year": 20.6,
+   "in_market_pct": 49.1,
+   "avg_size": 0.209,
+   "cost_per_trade_pct": 0.1743
+  }
+ },
+ "late_by_a_day": {
+  "days": 2327,
+  "total_pct": 113.45,
+  "growth_a_year_pct": 12.63,
+  "avg_a_year_pct": 13.0,
+  "vol_pct": 14.91,
+  "sharpe": 0.87,
+  "worst_drop_pct": -29.24
+ },
+ "no_costs": {
+  "days": 2327,
+  "total_pct": 214.68,
+  "growth_a_year_pct": 19.7,
+  "avg_a_year_pct": 19.11,
+  "vol_pct": 15.04,
+  "sharpe": 1.27,
+  "worst_drop_pct": -25.99
+ },
+ "hold_instead": {
+  "days": 2327,
+  "total_pct": 1493.79,
+  "growth_a_year_pct": 54.39,
+  "avg_a_year_pct": 69.01,
+  "vol_pct": 71.4,
+  "sharpe": 0.97,
+  "worst_drop_pct": -84.73
+ },
+ "hold_years": {
+  "2020": {
+   "total_pct": 182.16,
+   "worst_drop_pct": -24.04,
+   "days": 200
+  },
+  "2021": {
+   "total_pct": 464.99,
+   "worst_drop_pct": -49.34,
+   "days": 365
+  },
+  "2022": {
+   "total_pct": -75.92,
+   "worst_drop_pct": -79.01,
+   "days": 365
+  },
+  "2023": {
+   "total_pct": 272.38,
+   "worst_drop_pct": -28.62,
+   "days": 365
+  },
+  "2024": {
+   "total_pct": 67.18,
+   "worst_drop_pct": -35.16,
+   "days": 366
+  },
+  "2025": {
+   "total_pct": -17.18,
+   "worst_drop_pct": -48.74,
+   "days": 365
+  },
+  "2026": {
+   "total_pct": -19.48,
+   "worst_drop_pct": -49.52,
+   "days": 301
+  }
+ },
+ "check_day": {
+  "Monday": {
+   "days": 2326,
+   "total_pct": 110.03,
+   "growth_a_year_pct": 12.35,
+   "avg_a_year_pct": 12.8,
+   "vol_pct": 15.16,
+   "sharpe": 0.84,
+   "worst_drop_pct": -23.7
+  },
+  "Tuesday": {
+   "days": 2332,
+   "total_pct": 128.29,
+   "growth_a_year_pct": 13.79,
+   "avg_a_year_pct": 13.99,
+   "vol_pct": 14.63,
+   "sharpe": 0.96,
+   "worst_drop_pct": -22.35
+  },
+  "Wednesday": {
+   "days": 2331,
+   "total_pct": 180.07,
+   "growth_a_year_pct": 17.5,
+   "avg_a_year_pct": 17.19,
+   "vol_pct": 14.6,
+   "sharpe": 1.18,
+   "worst_drop_pct": -13.69
+  },
+  "Thursday": {
+   "days": 2330,
+   "total_pct": 180.1,
+   "growth_a_year_pct": 17.51,
+   "avg_a_year_pct": 17.18,
+   "vol_pct": 14.43,
+   "sharpe": 1.19,
+   "worst_drop_pct": -18.81
+  },
+  "Friday": {
+   "days": 2329,
+   "total_pct": 170.67,
+   "growth_a_year_pct": 16.89,
+   "avg_a_year_pct": 16.71,
+   "vol_pct": 14.88,
+   "sharpe": 1.12,
+   "worst_drop_pct": -24.47
+  },
+  "Saturday": {
+   "days": 2328,
+   "total_pct": 139.41,
+   "growth_a_year_pct": 14.67,
+   "avg_a_year_pct": 14.74,
+   "vol_pct": 14.51,
+   "sharpe": 1.02,
+   "worst_drop_pct": -27.14
+  },
+  "Sunday": {
+   "days": 2327,
+   "total_pct": 145.25,
+   "growth_a_year_pct": 15.11,
+   "avg_a_year_pct": 15.19,
+   "vol_pct": 14.98,
+   "sharpe": 1.01,
+   "worst_drop_pct": -27.86
+  }
+ },
+ "note": "Results are fractions of the trend share, added up (not compounded), with the three coins sharing it equally (before SOL's first full vote in 2021, BTC and ETH share it). The rule was chosen from a research pass on the same history, so this is the record of a reasonable rule, not a promise: the live record since 2025-01-05 is the honest test."
+}

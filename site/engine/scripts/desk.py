@@ -54,7 +54,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 UA = "crypto-futures-desk/%s (personal research; python-urllib)" % VERSION
 
 BINANCE = "https://fapi.binance.com"
@@ -111,8 +111,10 @@ DEFAULTS = {
     "chase_atr_max": 0.5,
     "block_high_vol_regime": True,
     "chart_signals": False,
-    "small_signals": True,
-    "small_signal_risk": 0.25,
+    "fed_basket": True,
+    "fed_basket_risk": 0.15,
+    "trend": True,
+    "trend_share": 0.5,
     "auto_track": True,
     "watchlist": ["BTC", "ETH", "SOL", "XRP", "LINK"],
     "primary_tf": "4h",
@@ -937,8 +939,9 @@ def analyse_event(bars, t_rel, now, kind="OTHER", stats=None, cfg=None, sym="BTC
         cand["evidence"] = ("AVOID" if verdict.startswith(("NEGATIVE", "NO EDGE")) else
                             "UNTESTED" if verdict.startswith("INSUFFICIENT") else
                             "SUPPORTED" if verdict.startswith("POSITIVE") else "UNPROVEN")
-        if cand["evidence"] == "UNPROVEN" and small_rule(coin, kind, setup, cfg):
-            cand["tier"] = "small"
+        if cand["evidence"] in ("UNPROVEN", "SUPPORTED") and basket_rule(coin, kind, setup, cfg):
+            cand["tier"] = "basket"
+            cand["history_stats"] = dict(BASKET_STATS)
         if now > cand["expires"]:
             cand["status"] = "EXPIRED: signalled %d min after the release; the tested entry was then. Do not chase it." % (k + 1)
             out["missed"].append(cand)
@@ -1355,20 +1358,26 @@ EVENT_KINDS = (("CPI", ("cpi",)), ("FOMC", ("fomc statement", "federal funds rat
 EVENT_NOT = ("minutes", "member", "speaks", "speech", "testimony", "adp", "flash", "revised", "preliminary")
 EVENT_SETUPS = ("sweep_reclaim_fade", "breakout_accept", "fade_first_15m", "follow_first_15m", "momentum_after_60m", "spike_fade_24h")
 EVENT_FIRST_MINUTE = 30                                          # tested: no event entry before 30 minutes after the release
-# News rules traded small: positive on their own coin's history and again on Binance perpetuals with the funding paid,
-# but not proven (the 90% interval still includes zero). They signal at `small_signal_risk` of normal risk (a quarter by
-# default, whatever your record), are labelled "small" everywhere, are tracked apart from proven signals, and never count
-# toward your edge status. On a Fed night ETH moves with SOL about 9 nights in 10, so with SOL's signal it is mostly the
-# same bet made larger, not a second bet. Perpetual replay: tests/engine/replay_history.py (30 Oct 2026).
-SMALL_RULES = {("ETH", "FOMC", "momentum_after_60m"): {"perp_n": 39, "perp_avg_R": 0.237, "perp_ci90": (-0.08, 0.55), "p_no_edge": 0.11,
-                                                     "period": "Sep 2019 to Sep 2026"}}
+# The Fed-night rule, traded as one basket of the five coins. Judged together, one data point per Fed night (Binance
+# perpetuals, Sep 2019 to Sep 2026, after costs and funding), following the first hour made +0.22R a night (90% range
+# -0.01 to +0.44, about a 6% chance of no edge), and the coins could not be told apart (between-coin spread 0.06R): each
+# coin's own figure (SOL +0.55R, BTC +0.02R) is mostly luck around that shared value. So every coin decides on the shared
+# estimate and trades at `fed_basket_risk` of normal risk (0.15: five coins together are 0.75 of one normal trade, and
+# same-night results correlate only 0.44, so the basket is steadier than one coin). Basket trades are tracked as
+# "fed basket" and never count toward your edge status. Replays: tests/engine/replay_history.py, check_fed_nights.py.
+BASKET_COINS = ("BTC", "ETH", "SOL", "XRP", "LINK")
+BASKET_RULES = {("FOMC", "momentum_after_60m")}
+BASKET_STATS = {"n": 48, "targets": 23, "avg_R": 0.216, "ci90": [-0.01, 0.44],
+                "label": "the Fed basket, five coins judged together (48 Fed nights on Binance perpetuals)"}
+BASKET_STATS_12H = {"hold_hours": 12, "n": 48, "targets": 23, "avg_R": 0.22,
+                    "label": "the Fed basket with a 12-hour hold (the coins' own 12-hour studies average +0.22R)"}
 
 
-def small_rule(coin, kind, rule, cfg=None):
-    """The evidence for a news rule traded small, or None (also None when small signals are turned off)."""
-    if not (cfg or DEFAULTS).get("small_signals", True):
+def basket_rule(coin, kind, rule, cfg=None):
+    """The shared evidence when this coin's rule trades in the Fed basket, or None (also None when the basket is off)."""
+    if not (cfg or DEFAULTS).get("fed_basket", True):
         return None
-    return SMALL_RULES.get((base_of(coin or ""), kind, rule))
+    return BASKET_STATS if base_of(coin or "") in BASKET_COINS and (kind, rule) in BASKET_RULES else None
 
 
 EVENT_STOP_FLOOR_PCT = {"BTC": 1.5, "ETH": 2.0, "default": 2.5}  # tested on BTC at 1.5%; wider for more volatile coins
@@ -1494,7 +1503,7 @@ def fit_hold_to_calendar(c, macro, now, cfg, t_rel, kind, coin, stats=None):
     When one falls inside the hold, the plan closes earlier (your blackout ahead of it) if that still leaves at least the
     shortest hold that kept the edge in testing, and the decision then uses that shorter hold's history. Otherwise the
     candidate is left as it is and the rules block it. Returns (candidate, note or None)."""
-    if (c.get("evidence") != "SUPPORTED" and c.get("tier") != "small") or t_rel is None or not c.get("close_by"):
+    if (c.get("evidence") != "SUPPORTED" and c.get("tier") != "basket") or t_rel is None or not c.get("close_by"):
         return c, None
     before = int(cfg["macro_blackout_minutes_before"]) * 60000
     hits = [e for e in macro or [] if "t" in e and e.get("impact") == "High" and e.get("country") in ("USD", "ALL")
@@ -1502,11 +1511,16 @@ def fit_hold_to_calendar(c, macro, now, cfg, t_rel, kind, coin, stats=None):
     if not hits:
         return c, None
     first = min(hits, key=lambda e: e["t"])
-    alt = shorter_hold(kind, c["setup"], stats, coin)
+    alt = dict(BASKET_STATS_12H) if c.get("tier") == "basket" else shorter_hold(kind, c["setup"], stats, coin)
     close_by = first["t"] - before
     held = (close_by - t_rel) / 3600000.0
     if not alt or held < float(alt["hold_hours"]):
         return c, None
+    if c.get("tier") == "basket":
+        note = ("hold shortened: close by %s, %d minutes before %s (your rule is to be flat before it), %.1f hours after the "
+                "release instead of 24. A 12-hour hold kept about the same edge across the five coins (+0.22R a trade), so the "
+                "decision uses that." % (fmt_time(close_by, cfg["tz_offset_minutes"]), before // 60000, first.get("title") or "the next release", held))
+        return dict(c, close_by=close_by, horizon_hours=rnd(max(0.25, (close_by - now) / 3600000.0), 2), history_stats=alt, hold_note=note), note
     note = ("hold shortened: close by %s, %d minutes before %s (your rule is to be flat before it), %.1f hours after the "
             "release instead of 24. In testing a %g-hour hold kept the edge: %+.2fR over %d trades (90%% interval %+.2fR to "
             "%+.2fR), so the decision uses that history."
@@ -2977,8 +2991,8 @@ def probation_status(rows, cfg):
     res = [r for r in rows if r.get("type") == "trade" and r.get("status") == "resolved"
            and r.get("decision") in ("TAKE", "PAPER")]
     res.sort(key=lambda r: (r.get("outcome") or {}).get("exit_t") or r.get("ts", 0))
-    # small-signal trades are scored apart: they can trip the kill switch below, never prove the edge
-    Rs = [x for x in ((r.get("outcome") or {}).get("R") for r in res if r.get("tier") != "small") if x is not None]
+    # basket (and older small-signal) trades are scored apart: they can trip the kill switch below, never prove the edge
+    Rs = [x for x in ((r.get("outcome") or {}).get("R") for r in res if r.get("tier") not in ("basket", "small")) if x is not None]
     live = [x for x in ((r.get("outcome") or {}).get("R") for r in res if r.get("decision") == "TAKE") if x is not None]
     if live:
         streak = 0
@@ -3123,7 +3137,7 @@ def track_ideas(home, cfg, sym, now, decision, plan, cand, E, price=None):
             new[-1]["blocked_by"] = blocked_by[:5]
     off = any(b == CHART_SIGNALS_OFF for b in (decision or {}).get("blocks") or [])
     if plan and cand and (d.startswith("SIGNAL") or (d == "NO TRADE" and off and cand.get("kind") == "setup")):
-        add(("small signal" if plan.get("tier") == "small" else "signal") if d.startswith("SIGNAL") else "chart pass", plan.get("setup"), plan["side"], plan["entry"], plan["stop"],
+        add(("fed basket" if plan.get("tier") == "basket" else "signal") if d.startswith("SIGNAL") else "chart pass", plan.get("setup"), plan["side"], plan["entry"], plan["stop"],
             plan["targets"][0]["price"], plan.get("entry_type", "limit"), float(plan.get("fill_window_hours") or 4),
             float(plan.get("horizon_hours") or 24), cand.get("evidence") or "POSITIVE",
             rel if cand.get("kind") == "event" else sig(plan["entry"]))
@@ -3392,7 +3406,7 @@ def run_checks(cfg, plan, snap, rows, macro=None, now=None, venue_price=None, si
     # 4h ATR was under 0.83% (quiet weeks), so for it they are warnings, not blocks. Risk limits still apply in full:
     # a wider stop only means a smaller position for the same loss at the stop.
     tested_news = ev_ok and (str((sim or {}).get("verdict") or "").startswith("POSITIVE")
-                             or (plan.get("tier") == "small" and str((sim or {}).get("verdict") or "").startswith("UNPROVEN")))
+                             or (plan.get("tier") == "basket" and str((sim or {}).get("verdict") or "").startswith("UNPROVEN")))
     min_rr = float(cfg.get("event_min_net_rr", 1.0)) if ev_ok else float(cfg["min_net_rr"])
     if not stop:
         blocks.append("no stop: every trade needs a stop placed on the exchange at entry")
@@ -3673,7 +3687,7 @@ CONFIG_SCHEMA = {
     "maintenance_margin_rate": ("map", 0.001, 0.2, None), "liquidation_fee": ("num", 0, 0.05),
     "macro_blackout_minutes_before": ("int", 30, 240), "macro_blackout_minutes_after": ("int", 30, 240),
     "mid_range_band": ("band",), "stop_atr_min": ("num", 0.1, 1.0), "stop_atr_max": ("num", 1.0, 6.0), "chase_atr_max": ("num", 0.1, 2.0),
-    "block_high_vol_regime": ("bool",), "chart_signals": ("bool",), "small_signals": ("bool",), "small_signal_risk": ("num", 0.05, 0.5),
+    "block_high_vol_regime": ("bool",), "chart_signals": ("bool",), "fed_basket": ("bool",), "fed_basket_risk": ("num", 0.05, 0.5), "trend": ("bool",), "trend_share": ("num", 0.1, 1.0),
     "auto_track": ("bool",), "primary_tf": ("choice", TF_CHOICES), "higher_tf": ("choice", TF_CHOICES),
     "default_entry_type": ("choice", ("limit", "market")), "scan_min_quote_volume": ("num", 0, 1e12), "scan_top": ("int", 5, 100),
     "mode": ("choice", ("paper", "live")), "probation_min_trades": ("int", 30, 1000), "unproven_risk_multiplier": ("num", 0.1, 1.0),
@@ -4247,9 +4261,9 @@ def cmd_plan(args, home, cfg):
     rows = journal_load(home)
     cfg_eff = cfg
     mult = 1.0
-    small = getattr(args, "tier", None) == "small"
+    small = getattr(args, "tier", None) == "basket"
     if small:
-        mult = max(0.05, min(0.5, float(cfg.get("small_signal_risk", 0.25))))
+        mult = max(0.05, min(0.5, float(cfg.get("fed_basket_risk", 0.15))))
     elif probation_status(rows, cfg)["status"] != "PROVEN":
         mult = max(0.0, min(1.0, float(cfg.get("unproven_risk_multiplier", 0.5))))
     nl, nr, _ = news_level(load_news_context(home), sym)
@@ -4261,9 +4275,8 @@ def cmd_plan(args, home, cfg):
                          lot=lot, equity=args.equity)
     lifted = None
     if small and lot and any("below the exchange minimum" in n for n in plan.get("notes") or []):
-        # A quarter of a small account's risk can be an order under the exchange minimum (5,000 INR at 1%: an ETH order of
-        # about 4.4 USDT). Size up to the minimum when the loss at the stop still stays within half your normal risk (no more
-        # than a proven signal while your record is new); otherwise the minimum blocks it, as for any plan.
+        # A basket trade's share of a small account's risk can be an order under the exchange minimum. Size up to the minimum
+        # when the loss at the stop still stays within half your normal risk; otherwise the minimum blocks it, as for any plan.
         f = mult * nmult
         while f < 0.5 - 1e-9:                               # the smallest step up (4% at a time) that clears the minimum
             f = min(0.5, f * 1.04)
@@ -4278,16 +4291,16 @@ def cmd_plan(args, home, cfg):
                              "(still no more than half, the size of a proven signal while your record is new)" % (lifted * 100, mult * nmult * 100))
         plan["min_order_lift"] = rnd(lifted, 3)
     elif small and any("below the exchange minimum" in n for n in plan.get("notes") or []):
-        plan["notes"].append("a small signal on this capital is under the exchange minimum even at half your normal risk: raise your "
-                             "capital or risk per trade to take small signals")
+        plan["notes"].append("this basket trade is under the exchange minimum even at half your normal risk: raise your capital or "
+                             "risk per trade to take it")
     created = now_ms()
     plan.update({"created_by": "desk.py plan", "created_at": created, "setup": args.setup, "tf": tf,
                  "horizon_hours": horizon_h, "close_by": created + int(horizon_h * 3600000),
                  "fill_window_hours": args.fill_window, "has_snapshot": bool(snap)})
     if small:
-        plan["tier"] = "small"
-        plan["notes"].append("small signal: a news rule that is positive but not proven, sized at %.0f%% of your normal risk and "
-                             "scored apart from proven signals" % (mult * 100))
+        plan["tier"] = "basket"
+        plan["notes"].append("Fed basket: the five coins share one tested rule, so each is sized at %.0f%% of your normal risk and the "
+                             "basket is scored as one" % (mult * 100))
         plan["risk_multiplier"] = mult
     elif mult < 1.0:
         plan["notes"].append("edge unproven: sized at %.0f%% of your normal risk until your record proves an edge" % (mult * 100))
@@ -4601,7 +4614,7 @@ def cmd_journal(args, home, cfg):
                "edge_status_at_entry": pr["status"],
                "status": "open" if args.decision in ("TAKE", "PAPER") else "skipped"}
         if plan.get("tier"):
-            row["tier"] = plan["tier"]           # a small-signal trade is scored apart and never proves the edge
+            row["tier"] = plan["tier"]           # a basket trade is scored apart and never proves the edge
         fill = getattr(args, "fill", None)
         if fill is not None:
             # Execution record: the price you actually got. The stop and targets keep their distance from the entry (set them
@@ -5128,8 +5141,8 @@ def engine_decision(plan, sim, chk, ev_stats=None, min_ev=0.10):
     # Without setup-specific evidence the base gets no credit for anything positive (market drift included).
     if ev_stats:
         p0 = ev_stats["targets"] / float(ev_stats["n"])
-        src = (("event history with a %g-hour hold (%d trades)" % (ev_stats["hold_hours"], ev_stats["n"])) if ev_stats.get("hold_hours")
-               else "event history (%d trades)" % ev_stats["n"])
+        src = ev_stats.get("label") or (("event history with a %g-hour hold (%d trades)" % (ev_stats["hold_hours"], ev_stats["n"])) if ev_stats.get("hold_hours")
+                                        else "event history (%d trades)" % ev_stats["n"])
         ev = ev_stats.get("avg_R")
     elif v.startswith("POSITIVE") and "Better than" in v:
         p0, src = an.get("target_first_rate"), "this setup's analogs"
@@ -5145,7 +5158,7 @@ def engine_decision(plan, sim, chk, ev_stats=None, min_ev=0.10):
     blocks = (chk or {}).get("blocks") or []
     other = [b for b in blocks if not b.startswith("history test")]          # the verdict itself is stated once, below
     rules = ("; rules check: " + "; ".join(other)) if other else ""
-    small = plan.get("tier") == "small" and v.startswith("UNPROVEN") and bool(ev_stats)
+    small = plan.get("tier") == "basket" and v.startswith(("UNPROVEN", "POSITIVE")) and bool(ev_stats)
     if v.startswith("NEGATIVE"):
         out["decision"], out["why"] = "NO TRADE", "history: " + v + rules
     elif not v.startswith("POSITIVE") and not small:
@@ -5162,9 +5175,9 @@ def engine_decision(plan, sim, chk, ev_stats=None, min_ev=0.10):
         out["decision"] = "SIGNAL " + plan["side"].upper()
         out["why"] = "expected value %+.2fR after costs (base: %s)" % (out["ev_r"], src)
         if small:
-            out["tier"] = "small"
-            out["why"] = ("small signal (positive but not proven, so sized at %.0f%% of your normal risk): " % (100 * float(plan.get("risk_multiplier") or 0.25))
-                          + out["why"])
+            out["tier"] = "basket"
+            out["why"] = ("Fed basket (the five coins share one tested rule; this coin is sized at %.0f%% of your normal risk): "
+                          % (100 * float(plan.get("risk_multiplier") or 0.15)) + out["why"])
     return out
 
 
@@ -5174,10 +5187,10 @@ def order_candidates(E, snap):
     so they must not crowd out one that can: on 12 Jun 2024 an unproven SOL breakout read was planned instead of the
     supported first-hour momentum)."""
     ev = [c for c in (E or {}).get("candidates") or [] if c.get("evidence") in ("SUPPORTED", "UNPROVEN")]
-    return ([dict(c, kind="event", score=100) for c in ev if c["evidence"] == "SUPPORTED"]
-            + [dict(c, kind="event", score=90) for c in ev if c["evidence"] == "UNPROVEN" and c.get("tier") == "small"]
+    return ([dict(c, kind="event", score=100) for c in ev if c.get("tier") == "basket"]
+            + [dict(c, kind="event", score=100) for c in ev if c["evidence"] == "SUPPORTED" and c.get("tier") != "basket"]
             + [dict(c, kind="setup") for c in (snap or {}).get("setups") or [] if c.get("tradeable")]
-            + [dict(c, kind="event", score=100) for c in ev if c["evidence"] == "UNPROVEN" and c.get("tier") != "small"])
+            + [dict(c, kind="event", score=100) for c in ev if c["evidence"] == "UNPROVEN" and c.get("tier") != "basket"])
 
 
 def coin_glance(snap, closed):
@@ -5260,8 +5273,8 @@ def cmd_brief(args, home, cfg):
         if c["kind"] == "event":
             window_h = max(1.0, (float(c.get("expires") or now) - now) / 60000.0) / 60.0      # what is left of the 15-minute window
             argv += ["--horizon-hours", repr(max(0.25, float(c["horizon_hours"]))), "--entry-type", "market", "--fill-window", repr(window_h)]
-            if c.get("tier") == "small":
-                argv += ["--tier", "small"]
+            if c.get("tier") == "basket":
+                argv += ["--tier", "basket"]
             ev_stats = c.get("history_stats")
         _quiet(cmd_plan, argv, home, cfg, args)
         plan = read_json(os.path.join(rd, "plan.json"), "plan")
@@ -5297,7 +5310,7 @@ def cmd_brief(args, home, cfg):
         res["candidate"] = {k: c.get(k) for k in ("setup", "side", "kind", "score", "entry", "stop", "target1", "target2", "expires", "close_by")}
         res["decision"] = engine_decision(plan, sim, chk, ev_stats)
         D = res["decision"]
-        tested = str((sim or {}).get("verdict") or "").startswith("POSITIVE") or (plan.get("tier") == "small"
+        tested = str((sim or {}).get("verdict") or "").startswith("POSITIVE") or (plan.get("tier") == "basket"
                                                                                   and str((sim or {}).get("verdict") or "").startswith("UNPROVEN"))
         if D.get("tier"):
             res["tier"] = D["tier"]
@@ -5588,6 +5601,330 @@ def cmd_verify_news(args, home, cfg):
     return 0
 
 
+# ------------------------------------------------------------------ weekly trend: BTC, ETH and SOL, long or out
+
+TREND_COINS = ("BTC", "ETH", "SOL")
+TREND_LOOKBACKS = (10, 20, 40, 80, 160)    # days: five trend lengths vote, so no single length is fitted to the past
+TREND_VOL = 0.30                           # a year per coin: size = the vote x min(1, 30% / the coin's recent swings)
+TREND_EWMA = 0.94                          # daily variance with RiskMetrics weights (about 11 days' half-life)
+TREND_CAP = 1.0                            # at most the coin's whole share at 1x: no leverage, so no stop and no liquidation risk
+TREND_BAND = 0.25                          # a size changes only when it moves by more than a quarter: fewer, cheaper trades
+TREND_ANCHOR = "2025-01-05"                # the live path starts at this Sunday, so every run and every phone shows the same sizes
+TREND_FROM = "2024-03-01"                  # daily bars from here: the 160-day vote and the volatility are warm by the anchor
+TREND_RULE = ("Each Monday at 00:00 UTC (05:30 IST), when Sunday's daily bar closes, five trend lengths vote for each coin: "
+              "is the price above where it was 10, 20, 40, 80 and 160 days ago? With 3 or more up, hold it; with 2 or fewer, "
+              "stay out. Never short. The size grows with the up-votes and shrinks when the coin swings hard (it aims at "
+              "about 30% a year of swings), and it is never more than the coin's share at 1x, so there is no stop: the "
+              "weekly check is the exit. A size changes only when it moves by more than a quarter.")
+_TREND_STUDY = {}
+
+
+def day_ms(text):
+    return int(dt.datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
+def weekday_of(ms):
+    """0 for a Monday (UTC) to 6 for a Sunday."""
+    return (int(ms) - MONDAY_OFFSET_MS) // DAY_MS % 7
+
+
+def is_sunday(ms):
+    return weekday_of(ms) == 6
+
+
+def next_trend_check(now):
+    """The next Monday 00:00 UTC (05:30 IST): Sunday's daily bar closes then and the weekly check runs."""
+    return MONDAY_OFFSET_MS + ((int(now) - MONDAY_OFFSET_MS) // WEEK_MS + 1) * WEEK_MS
+
+
+def trend_votes(closes, i):
+    """One vote per trend length: +1 when the close is above the close that many days before, else -1."""
+    return [1 if closes[i] > closes[i - n] else -1 for n in TREND_LOOKBACKS]
+
+
+def trend_target(votes, var):
+    """The size the rule wants, as a share of the coin's capital: the vote above zero (long or out, never short),
+    scaled so the coin's swings stay near 30% a year, and never above 1."""
+    s = max(0.0, sum(votes) / float(len(votes)))
+    return s * min(TREND_CAP, (TREND_VOL / math.sqrt(365.0)) / math.sqrt(max(var, 1e-8)))
+
+
+def trend_moves(w, t):
+    """Trade only a real change: in or out, or a size change of more than a quarter."""
+    return (t == 0) != (w == 0) or abs(t - w) > TREND_BAND * max(abs(w), 0.25)
+
+
+def trend_action(w0, w1):
+    if w0 <= 0 < w1:
+        return "BUY"
+    if w1 <= 0 < w0:
+        return "SELL ALL"
+    if w1 > w0:
+        return "ADD"
+    if w1 < w0:
+        return "TRIM"
+    return "HOLD" if w1 > 0 else "OUT"
+
+
+def trend_path(bars, funding=None, cost=0.0, start_ms=None, lag=0, weekday=6):
+    """The weekly trend rule over closed daily bars, oldest first. A check runs at each Sunday close (Monday 00:00 UTC)
+    from start_ms on, and a new size earns from the next day. `funding` maps a UTC day (ms // DAY_MS) to that day's
+    summed funding rate (a long pays a positive rate); `cost` is the cost of trading a size of 1 (fee with GST, plus
+    slippage). lag=1 trades a day late, at Monday's close, to show what a late order costs; `weekday` moves the check
+    to another day's close (0 Monday to 6 Sunday), to show how much the choice of day matters. Returns the checks, the
+    daily results (each a fraction of the coin's capital share) and the rule's read at the last bar."""
+    closes = [b["c"] for b in bars]
+    funding = funding or {}
+    var, w, pend, on = None, 0.0, None, False
+    checks, daily = [], []
+    for i in range(len(bars)):
+        r = closes[i] / closes[i - 1] - 1.0 if i else 0.0
+        var = r * r if var is None else TREND_EWMA * var + (1.0 - TREND_EWMA) * r * r
+        if i < max(TREND_LOOKBACKS):
+            continue
+        paid = 0.0
+        if weekday_of(bars[i]["t"]) == weekday and (start_ms is None or bars[i]["t"] >= start_ms):
+            votes = trend_votes(closes, i)
+            row = {"t": bars[i]["t"] + DAY_MS, "price": closes[i], "votes": votes, "vol": math.sqrt(var * 365.0),
+                   "target": trend_target(votes, var), "w_before": w, "w": None, "action": None}
+            checks.append(row)
+            pend, on = (i + lag, row), True
+        if pend and pend[0] == i:
+            row = pend[1]
+            if trend_moves(w, row["target"]):
+                paid, w = abs(row["target"] - w) * cost, row["target"]
+            row["w"], row["action"] = w, trend_action(row["w_before"], w)
+            pend = None
+        if on and i + 1 < len(bars):
+            t1 = bars[i + 1]["t"]
+            daily.append((t1, w * (closes[i + 1] / closes[i] - 1.0) - w * funding.get(t1 // DAY_MS, 0.0) - paid, w))
+    last = None
+    if len(bars) > max(TREND_LOOKBACKS):
+        votes = trend_votes(closes, len(bars) - 1)
+        last = {"t": bars[-1]["t"] + DAY_MS, "votes": votes, "target": trend_target(votes, var), "vol": math.sqrt(var * 365.0)}
+    return checks, daily, last
+
+
+def trend_portfolio(per_coin):
+    """The coins with equal capital shares: each day's result is the average over the coins trading that day."""
+    byday = {}
+    for rows in per_coin.values():
+        for t, p, _ in rows:
+            byday.setdefault(t, []).append(p)
+    return [(t, sum(v) / len(v)) for t, v in sorted(byday.items())]
+
+
+def trend_growth(rows):
+    """Daily results (fractions of capital) grown day by day: the total and the worst fall from a high, in %."""
+    g = peak = 1.0
+    worst = 0.0
+    for r in rows:
+        g *= max(1e-9, 1.0 + r[1])
+        peak = max(peak, g)
+        worst = min(worst, g / peak - 1.0)
+    return (g - 1.0) * 100, worst * 100
+
+
+def trend_stats(rows, min_days=30):
+    """From daily results (fractions of capital): the total and the growth a year (compounded), the average a year
+    (not compounded), the swings a year, the Sharpe ratio and the worst fall from a high."""
+    xs = [r[1] for r in rows]
+    if len(xs) < min_days:
+        return None
+    m, s = statistics.mean(xs), statistics.pstdev(xs)
+    total, worst = trend_growth(rows)
+    return {"days": len(xs), "total_pct": rnd(total, 2),
+            "growth_a_year_pct": rnd(((1 + total / 100.0) ** (365.0 / len(xs)) - 1) * 100, 2) if total > -100 else -100.0,
+            "avg_a_year_pct": rnd(m * 365.0 * 100, 2), "vol_pct": rnd(s * math.sqrt(365.0) * 100, 2),
+            "sharpe": rnd(m / s * math.sqrt(365.0), 2) if s else 0.0, "worst_drop_pct": rnd(worst, 2)}
+
+
+def get_funding_all(net, sym, start_ms, end_ms):
+    """Every settled funding rate between two times, oldest first (Binance answers 1000 at a time)."""
+    out, t = [], int(start_ms)
+    for _ in range(40):
+        page = get_funding_range(net, sym, t, end_ms)
+        out.extend(page)
+        if len(page) < 1000:
+            break
+        t = page[-1][0] + 1
+    return out
+
+
+def trend_size(per, w, price, lot):
+    """The position for a size at today's price: USDT and coins, rounded down to the exchange's step, with its minimum."""
+    usdt = per * w
+    exact = usdt / price if price else 0.0
+    step = (lot or {}).get("step")
+    if step:
+        dec = len(("%.10f" % step).rstrip("0").split(".")[1])
+        qty = round(math.floor(exact / step + 1e-9) * step, dec)
+    else:
+        qty = sig(exact, 3)
+    least = max((lot or {}).get("min_notional") or 0.0, ((lot or {}).get("min_qty") or 0.0) * price)
+    return {"usdt": rnd(usdt, 2), "qty": qty, "qty_exact": sig(exact, 3), "min_order_usdt": rnd(least, 2) if least else None,
+            "below_min": bool(w > 0 and least and qty * price < least - 1e-9)}
+
+
+def trend_study_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(here, "..", "references", "trend_backtest.json"), os.path.join(here, "references", "trend_backtest.json"),
+              os.path.join(here, "trend_backtest.json")):
+        if os.path.exists(p):
+            return os.path.normpath(p)
+    return None
+
+
+def load_trend_study():
+    """The trend rule's long test (references/trend_backtest.json, made by tests/engine/trend_backtest.py)."""
+    p = trend_study_path()
+    if not p:
+        return {}
+    if p not in _TREND_STUDY:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                _TREND_STUDY[p] = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+    return _TREND_STUDY[p]
+
+
+def trend_report(net, cfg, now=None, funding=True):
+    """The weekly trend part as it stands: each coin's vote, size and this week's action, and the rule's live path
+    since the anchor (after costs and the funding a long pays). Sizes are for your capital: the trend share of it,
+    split equally across the three coins, at 1x."""
+    now = now_ms() if now is None else now
+    start, frm = day_ms(TREND_ANCHOR), day_ms(TREND_FROM)
+    share = max(0.1, min(1.0, float(cfg.get("trend_share", 0.5))))
+    eq = float(cfg["equity"])
+    per = eq * share / len(TREND_COINS)
+    fx = cfg.get("local_rate")
+    R = {"as_of": now, "on": bool(cfg.get("trend", True)), "coins_list": list(TREND_COINS), "share": share,
+         "capital": rnd(eq * share, 2), "per_coin": rnd(per, 2), "local_rate": fx, "local_currency": cfg.get("local_currency"),
+         "anchor": TREND_ANCHOR, "next_check": next_trend_check(now), "rule": TREND_RULE, "coins": [], "errors": []}
+    try:
+        lots = get_exchange_info(net)
+    except DeskError as e:
+        lots = {}
+        R["errors"].append("exchange minimums: %s" % e)
+    per_daily, weeks = {}, {}
+    for c in TREND_COINS:
+        sym = norm_symbol(c)
+        try:
+            bars = get_klines(net, sym, "1d", bars=int((now - frm) // DAY_MS) + 3)
+        except DeskError as e:
+            R["errors"].append("%s daily prices: %s" % (c, e))
+            continue
+        closed, live = split_closed(bars, now)
+        closed = [b for b in closed if b["t"] >= frm]
+        if len(closed) <= max(TREND_LOOKBACKS) or closed[0]["t"] > frm + 3 * DAY_MS:
+            R["errors"].append("%s: not enough daily history for the trend vote" % c)
+            continue
+        fund = {}
+        if funding:
+            try:
+                for t, rate in get_funding_all(net, sym, start, (now // DAY_MS) * DAY_MS - 1):
+                    fund[t // DAY_MS] = fund.get(t // DAY_MS, 0.0) + rate
+            except DeskError as e:
+                R["errors"].append("%s funding: %s (its result leaves funding out)" % (c, e))
+        checks, daily, last = trend_path(closed, fund, cost_model(cfg, sym, "market")["entry"], start_ms=start)
+        if not checks:
+            R["errors"].append("%s: no weekly check since %s yet" % (c, TREND_ANCHOR))
+            continue
+        per_daily[c] = daily
+        ck = checks[-1]
+        w, w0 = ck["w"], ck["w_before"]
+        px = (live or closed[-1])["c"]
+        lot = lots.get(sym) or {}
+        size = trend_size(per, w, px, lot)
+        row = {"symbol": sym, "coin": c, "price": sig(px), "checked_at": ck["t"], "check_price": sig(ck["price"]),
+               "votes": dict(zip([str(n) for n in TREND_LOOKBACKS], ck["votes"])), "ups": sum(1 for v in ck["votes"] if v > 0),
+               "vol_pct": rnd(ck["vol"] * 100, 1), "target_w": rnd(ck["target"], 3), "w": rnd(w, 3), "w_prev": rnd(w0, 3),
+               "state": "HOLD" if w > 0 else "OUT", "action": ck["action"], "change_usdt": rnd(per * (w - w0), 2), "size": size,
+               "needs_capital_usdt": (rnd(size["min_order_usdt"] / w / share * len(TREND_COINS), 0) if size["below_min"] else None),
+               "result_pct": rnd(trend_growth(daily)[0], 2)}
+        if fx:
+            row["size"]["local"] = rnd(size["usdt"] * fx, 0)
+            if row["needs_capital_usdt"]:
+                row["needs_capital_local"] = rnd(row["needs_capital_usdt"] * fx, -2)
+        if last and last["t"] > ck["t"]:
+            tw = last["target"] if trend_moves(w, last["target"]) else w
+            row["if_checked_now"] = {"t": last["t"], "ups": sum(1 for v in last["votes"] if v > 0),
+                                     "votes": dict(zip([str(n) for n in TREND_LOOKBACKS], last["votes"])),
+                                     "w": rnd(tw, 3), "action": trend_action(w, tw)}
+        R["coins"].append(row)
+        for x in checks:
+            weeks.setdefault(x["t"], {})[c] = {"w": rnd(x["w"], 3), "action": x["action"], "ups": sum(1 for v in x["votes"] if v > 0)}
+    port = trend_portfolio(per_daily)
+    if port:
+        g, curve = 1.0, []
+        for t, p in port:
+            g *= 1.0 + p
+            if is_sunday(t) or t == port[-1][0]:
+                curve.append([t + DAY_MS, rnd((g - 1.0) * 100, 2)])
+        total, worst = trend_growth(port)
+        R["model"] = {"since": TREND_ANCHOR, "stats": trend_stats(port), "total_pct": rnd(total, 2), "worst_drop_pct": rnd(worst, 2),
+                      "last_52w_pct": rnd(trend_growth([x for x in port if x[0] >= now - 364 * DAY_MS])[0], 2), "curve": curve,
+                      "weeks": [dict(t=t, **v) for t, v in sorted(weeks.items())][-60:],
+                      "note": ("the rule's own results on your three coins since %s, after fees with GST, slippage and the funding a "
+                               "long pays, as a %% of the trend share (what following it exactly would have made)" % TREND_ANCHOR)}
+    st_ = load_trend_study()
+    if st_.get("portfolio"):
+        R["tested"] = {k: st_.get(k) for k in ("from", "to", "portfolio", "years", "late_by_a_day", "hold_instead", "sharpe_90", "coins")}
+    else:
+        R["errors"].append("references/trend_backtest.json is missing: the long test is not shown")
+    return R
+
+
+def trend_lines(R, cfg):
+    """The trend part as text (for 'trend' and 'today')."""
+    tz = cfg["tz_offset_minutes"]
+    te = (R.get("tested") or {}).get("portfolio") or {}
+    cur = R.get("local_currency")
+    loc = (lambda v: (" = %s %s" % (cur, "{:,.0f}".format(v))) if (cur and v is not None) else "")
+    L = ["WEEKLY TREND (%s: hold or stay out, checked each Monday 05:30 IST; %s)" % (
+        ", ".join(R["coins_list"]), ("tested %s to %s: %+.1f%% a year, worst fall %.1f%%, after costs" % (
+            R["tested"]["from"], R["tested"]["to"], te.get("growth_a_year_pct") or 0, te.get("worst_drop_pct") or 0)) if te else "no long test file")]
+    if not R.get("on"):
+        L.append("  Off in your settings (config trend). The rule still reads below, for information.")
+    L.append("  Your trend share: %.0f%% of your capital = %.2f USDT, %.2f USDT per coin at 1x" % (R["share"] * 100, R["capital"], R["per_coin"]))
+    for c in R["coins"]:
+        s = c["size"]
+        last = "%s at the %s check" % (c["action"], fmt_day(c["checked_at"], tz)[:10])
+        if c["state"] == "HOLD":
+            pos = "hold %s %s (about %.2f USDT%s), 1x, no stop" % (("%.8f" % (s["qty"] or s["qty_exact"])).rstrip("0").rstrip("."), c["coin"], s["usdt"],
+                                                                 loc(s.get("local")))
+            if s["below_min"]:
+                pos += ("; under the exchange minimum (%.0f USDT), so this coin needs about %.0f USDT of capital%s at this size"
+                        % (s["min_order_usdt"], c["needs_capital_usdt"], loc(c.get("needs_capital_local"))))
+        else:
+            pos = "stay out"
+        L.append("  %-4s %s (%d of 5 trend lengths up, size %.2f): %s. Last: %s." % (c["coin"], c["state"], c["ups"], c["w"], pos, last))
+        nxt = c.get("if_checked_now")
+        if nxt and nxt["action"] not in ("HOLD", "OUT"):
+            L.append("       if the week ended now: %s (%d of 5 up)" % (nxt["action"], nxt["ups"]))
+    m = R.get("model")
+    if m:
+        L.append("  The rule since %s: %+.1f%% of the trend share (last 52 weeks %+.1f%%), after costs and funding."
+                 % (m["since"], m["total_pct"], m["last_52w_pct"]))
+    L.append("  Next check: %s. You place the orders yourself." % fmt_day(R["next_check"], tz, R["as_of"]))
+    if R["errors"]:
+        L.append("  data gaps: " + "; ".join(R["errors"][:4]))
+    return L
+
+
+def cmd_trend(args, home, cfg):
+    """The weekly trend part on its own: each coin's vote and size, this week's action, the next check, and the
+    rule's results since the anchor. Long or out, never short; 1x and no stop. It never places orders."""
+    net = make_net(home, args)
+    R = trend_report(net, cfg, now_ms(), funding=not getattr(args, "no_funding", False))
+    if args.json:
+        print(json.dumps(R, indent=1))
+        return 0
+    _print(trend_lines(R, cfg) + ["", "Not financial advice."])
+    return 0
+
+
 def cmd_today(args, home, cfg):
     """What matters today, in one read and without Claude: the main scheduled news around now (the live calendar
     cross-checked with the official US schedule bundled with the skill), the latest headlines that touch your coins or
@@ -5696,8 +6033,8 @@ def cmd_today(args, home, cfg):
     # comes sooner, and a data problem on another coin later in the run cannot hold it up.
     live = [g for g in groups if g["t"] <= now <= g["t"] + 80 * 60000]
     first = [norm_symbol(coin) for g in live for coin, _ in proven_news_rules(g["kind"], stats)]
-    first += [norm_symbol(c) for g in live for (c, k, r) in SMALL_RULES if k == g["kind"] and small_rule(c, k, r, cfg)]
-    if first:                                           # proven rules first, then small ones: each has 15 minutes to be placed
+    first += [norm_symbol(c) for g in live for (k, r) in BASKET_RULES if k == g["kind"] for c in BASKET_COINS if basket_rule(c, k, r, cfg)]
+    if first:                                           # the Fed-rule coins first: each signal has 15 minutes to be placed
         coins = sorted([c for c in coins if c in first], key=first.index) + [c for c in coins if c not in first]
     for sym in coins:
         try:
@@ -5750,6 +6087,13 @@ def cmd_today(args, home, cfg):
                                       "lost on balance%s" % (c.get("ev_r") or 0.0, ("; also blocked by: " + ", ".join(others)) if others else "")
                                       if off else short_reason(why, blocks=c.get("blocks")))})
     T["watch"] = watch
+    if cfg.get("trend", True):
+        try:
+            T["trend"] = trend_report(net, cfg, now)
+        except DeskError as e:
+            T["errors"].append("weekly trend: %s" % e)
+        except Exception as e:                      # the trend part must never hide the day's signals: report it
+            T["errors"].append("weekly trend: engine error (%s: %s); please report it" % (type(e).__name__, e))
     if args.json:
         print(json.dumps(T, indent=1))
         return 0
@@ -5799,7 +6143,7 @@ def cmd_today(args, home, cfg):
         for c in T["signals"]:
             cd = c.get("candidate") or {}
             L.append("  >> %s %s%s: %s %s, entry %s, stop %s, T1 %s%s. Full plan, size and checks: %s"
-                     % (base_of(c["symbol"]), c["decision"], " (SMALL: positive but unproven, a quarter of your normal risk)" if c.get("tier") == "small" else "", cd.get("setup"), cd.get("side"), fp(cd.get("entry")), fp(cd.get("stop")),
+                     % (base_of(c["symbol"]), c["decision"], " (FED BASKET: one of five coins sharing one tested rule, %.0f%% of your normal risk)" % (100 * float(cfg.get("fed_basket_risk", 0.15))) if c.get("tier") == "basket" else "", cd.get("setup"), cd.get("side"), fp(cd.get("entry")), fp(cd.get("stop")),
                         fp(cd.get("target1")), ((", a market order by %s (stop and target from your fill)" if cd.get("kind") == "event"
                                                  else ", order expires %s") % fmt_time(cd["expires"], tz)) if cd.get("expires") else "",
                         c.get("packet")))
@@ -5819,6 +6163,8 @@ def cmd_today(args, home, cfg):
         L.append("  Watching (NOT signals; the evidence is not there):")
         for w in watch[:8]:
             L.append("    %s %s [%s]: %s" % (base_of(w["symbol"]), w["idea"], w["evidence"], w["why_not"]))
+    if T.get("trend"):
+        L += [""] + trend_lines(T["trend"], cfg)
     if T["live_record"]:
         agg = {}
         for t in T["live_record"]:
@@ -5886,6 +6232,14 @@ def _aggregate(rows, tf_ms):
              "%.3f" % x[9], "%.2f" % x[10], "0"] for x in out]
 
 
+def with_early_days(days, seed, n=1100):
+    """Daily bars with n made-up earlier days in front that end at the first day's open, so the weekly trend vote
+    (160 days, from 2024) has history to read on the fake exchanges."""
+    old = synth_bars(seed, n, "1d", days[0][0], 1.0)
+    k = float(days[0][1]) / float(old[-1][4])
+    return [[r[0]] + ["%.4f" % (float(x) * k) for x in r[1:5]] + r[5:] for r in old] + days
+
+
 def _split(rows, n):
     """Each 15m bar -> n sub-bars along the path open -> low -> high -> close (or open -> high -> low -> close)
     that re-aggregate to the same OHLC."""
@@ -5945,6 +6299,8 @@ class SynthExchange(object):
                 rows = _split3(base[-9000:])
             elif tf == "1m":
                 rows = _split(base[-400:], 15)
+            elif tf == "1d":
+                rows = with_early_days(_aggregate(base, DAY_MS), self.seed + 7 + sum(ord(ch) for ch in sym))
             elif TF_MIN[tf] > 15 and TF_MIN[tf] % 15 == 0:
                 rows = _aggregate(base, TF_MIN[tf] * 60000)
             else:
@@ -6170,7 +6526,7 @@ def build_parser():
                    help="time stop: close by this many hours after entry (default 48h on 4h bars)")
     p.add_argument("--replace", action="store_true", help="overwrite the plan in this run folder instead of starting a new one")
     p.add_argument("--fill-window", dest="fill_window", type=float, default=4.0)
-    p.add_argument("--tier", choices=["small"], help="a news rule traded small (sized at small_signal_risk of normal risk)")
+    p.add_argument("--tier", choices=["basket"], help="a Fed-basket trade (sized at fed_basket_risk of normal risk)")
     p.add_argument("--equity", type=float)
     p.add_argument("--setup")
     p.add_argument("--atr", type=float, help="ATR of the primary timeframe (chart mode: read it off the DESK table)")
@@ -6214,6 +6570,8 @@ def build_parser():
     p.add_argument("--hours", type=float, default=12, help="headlines from the last N hours")
     p.add_argument("--ahead", type=float, default=36, help="calendar: hours ahead (6 hours back always)")
     p.add_argument("--max-headlines", dest="max_headlines", type=int, default=8)
+    p = sub.add_parser("trend", help="the weekly trend part: BTC, ETH and SOL, hold or stay out, checked each Monday")
+    p.add_argument("--no-funding", dest="no_funding", action="store_true", help="skip the funding history (faster; results leave it out)")
     p = sub.add_parser("packet", help="compact briefing for the agents (run folder + context + journal)")
     p.add_argument("--run", default="latest")
     p.add_argument("--context", default="latest", help="context JSON path, 'latest', or 'none'")
@@ -6306,7 +6664,7 @@ def main(argv=None):
             args.min_qv = float(cfg["scan_min_quote_volume"])
         fn = {"doctor": cmd_doctor, "init": cmd_init, "context": cmd_context, "scan": cmd_scan, "snapshot": cmd_snapshot,
               "plan": cmd_plan, "simulate": cmd_simulate, "check": cmd_check, "journal": cmd_journal,
-              "selftest": cmd_selftest, "manual": cmd_manual, "packet": cmd_packet, "event": cmd_event, "brief": cmd_brief, "today": cmd_today, "verify-news": cmd_verify_news,
+              "selftest": cmd_selftest, "manual": cmd_manual, "packet": cmd_packet, "event": cmd_event, "brief": cmd_brief, "today": cmd_today, "trend": cmd_trend, "verify-news": cmd_verify_news,
               "config": cmd_config, "news": cmd_news}[args.cmd]
         return fn(args, home, cfg)
     except DeskError as e:

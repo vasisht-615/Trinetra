@@ -1,10 +1,10 @@
 {
- "engine": "1.4.0",
+ "engine": "1.5.0",
  "files": [
   {
    "path": "scripts/desk.py",
-   "sha256": "3822c4d500253c1cf8de0be4daf5c9158775d378cac4033f38c9d4e5fa9855cf",
-   "bytes": 339062
+   "sha256": "bf88cc3495be2cfe92df4f7d702aea605cf35fd295a4cf6d38ca825e4a0baf66",
+   "bytes": 358804
   },
   {
    "path": "references/event_stats.json",
@@ -25,6 +25,11 @@
    "path": "references/scenarios.json",
    "sha256": "3fb8567df79422e45a8e282c338d6085e23158e78d672794b355c686e13968a1",
    "bytes": 13299
+  },
+  {
+   "path": "references/trend_backtest.json",
+   "sha256": "6351cf677b58f4da2014f44daab4e9394683d8e0ae373b98e4c2229f533a5567",
+   "bytes": 5756
   }
  ]
 }
