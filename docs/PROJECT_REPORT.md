@@ -1,7 +1,8 @@
 # Trinetra: project report
 
-*30 October 2026. Covers the work merged in pull request #1 and the work in the follow-up on `claude/watchdog-ntfy-fees`
-(open a second pull request to merge it). Every number here comes from a test or replay that can be run again (section 9).*
+*30 October 2026, updated 31 October for version 1.5 (section 0.5). Covers the work merged in pull request #1 and the
+work in the follow-up on `claude/watchdog-ntfy-fees` (open a second pull request to merge it). Every number here comes
+from a test or replay that can be run again (section 9).*
 
 R is the unit used throughout: 1R is what one trade loses if it hits its stop. +0.5R a trade means you made half
 your risk per trade on average. All results are after exchange fees (CoinSwitch PRO rates plus 18% GST), slippage
@@ -55,6 +56,93 @@ There are about 8 Fed decisions a year, so about 6 SOL signals a year.
 **The one warning.** Since January 2025, SOL's rule made 12 trades for +1.23R in total (about +0.10R a trade), well
 below its long-run +0.55R. That is too few trades to call the edge gone, but it is the thing to watch. The app's
 record tracks it live and suspends a rule after a losing record.
+
+---
+
+## 0.5 What changed in version 1.5 (31 October 2026)
+
+Version 1.5 follows the research report's advice: judge the Fed rule across all five coins at once, add a slow weekly
+trend part, and make alerts reach your phone. Small signals (section 3) are replaced by the Fed basket.
+
+### The Fed basket: one rule, five coins
+
+- On a Fed night the same first-hour rule now runs on **BTC, ETH, SOL, XRP and LINK**, judged together: one result per night.
+- Together they averaged **+0.22R a night over 48 Fed nights** on Binance perpetuals (90% range −0.01R to +0.44R). The
+  coins differ no more than chance would explain, so one shared estimate fits them all.
+- **Each coin is sized at 15% of your normal risk.** All five together risk about three-quarters of one normal trade.
+  Their results on the same night move together (correlation 0.44), so it is one bet spread over five coins.
+- A coin whose 15% is below the exchange's minimum order is sized up to it, never past half your normal risk.
+- **SOL is in the basket too.** Its own record since 2025 is weak (about +0.10R a trade), so it no longer trades alone
+  at a larger size. With the basket switched off (Settings), SOL's own rule comes back as before.
+- Basket trades are scored apart and never count toward proving your edge.
+- Each coin keeps its tested stop floor: BTC 1.5%, ETH 2%, the others 2.5%.
+- The app shows **one ticket with every order**, a **Copy all orders** button, and a **Placed** button per coin.
+
+### The weekly trend: BTC, ETH and SOL, held or out
+
+- **Every Monday at 05:30 IST**, when Sunday's daily bar closes, five trend lengths vote for each coin: is the price
+  above where it was 10, 20, 40, 80 and 160 days ago?
+- **3 or more up: hold it. 2 or fewer: stay out.** It never shorts.
+- The size grows with the votes and shrinks when the coin swings hard (it aims at about 30% a year of swings). It is
+  never more than the coin's share at **1x**, so there is no stop and liquidation is far away. The Monday check is the exit.
+- A size changes only when it moves by more than a quarter, so there are few orders (about 20 to 25 a year per coin).
+- It uses a share of your capital (**Settings: 25%, 50% or 100%; 50% by default**), split equally across the three coins.
+
+Tested on Binance perpetuals, 15 June 2020 to 29 October 2026, with the engine's own code, after fees, GST, slippage and
+funding (`tests/engine/trend_backtest.py`):
+
+| | Result |
+|---|---|
+| Growth a year | **+15.1%** |
+| Swings a year | 15.0% |
+| Sharpe ratio | 1.01 (90% range 0.30 to 1.73) |
+| Worst fall from a high | **−27.9%** |
+| Each year | 2020 (from June) +52%, 2021 +39%, 2022 −9%, 2023 +13%, 2024 +20%, 2025 −2%, 2026 to October −4% |
+| Orders placed a day late | +12.6% a year |
+| With no costs at all | +19.7% a year |
+| Simply holding the three coins | +54.4% a year, but a worst fall of −84.7% |
+| Checking on another weekday | +12.3% to +17.5% a year; worst falls −13.7% to −27.9% (the day is luck, not skill: Sunday is kept because it is Monday morning in India) |
+
+In plain words: the trend part made money over six years, mostly in strong trends (2020, 2021, 2024). It lost a
+little in choppy years, including 2025 and 2026 so far. **Since January 2025 the rule is at −5.9%.** It is a slow
+part: expect flat or losing stretches that last months.
+
+The app's live reading matched this test on **all 60 weekly checks since January 2025, for all three coins**
+(`tests/engine/check_trend_live.py`).
+
+**The size limit to know.** The trend positions are small. With ₹5,000 of capital and a 50% share, each coin gets at
+most about ₹830. With Binance's usual minimums (about 100 USDT for BTC, 5 USDT for SOL), today's BTC size (0.20) needs
+about ₹2.6 lakh of capital and SOL's about ₹24,000. CoinSwitch's minimums may be lower. The app shows the exact amount,
+and says "Too small to place yet" with the capital needed when it is below the minimum.
+
+### Phone alerts, even with Trinetra closed
+
+- After each Fed decision, the server watchdog reads all five coins and sends **one top-priority alert with every
+  order** (side, stop %, target %). If you don't tap **I'm on it**, it repeats once, 6 minutes later, while there is still
+  time to order.
+- On Mondays it sends the **weekly trend's changes** (a coin going in or out).
+- **Settings, Alerts and reminders, Send a test alert** checks that your phone rings. Telegram works too.
+- The server reads Coinbase prices (Binance refuses US servers), so an alert means "open Trinetra". The app confirms
+  with Binance data, the news check and your limits.
+- Setup, once: install **ntfy**, subscribe to a long private topic name, add **`NTFY_TOPIC`** in Netlify, and let the
+  topic override Do Not Disturb. Optional: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; `TREND_ALERTS=off`.
+
+### The app
+
+- **Less clutter:** each card shows one action, and explanations open with a tap.
+- **More alive:** taps ripple, the tab indicator slides, prices roll to their new value, pull Today down to check
+  again, charts draw in and can be read with a finger. Everything stays still with "reduce motion".
+
+### Tests for 1.5 (all pass)
+
+| Test | Result |
+|---|---|
+| Every Fed night since January 2025, all five coins, live app path vs the replay | 75 coin-nights, **0 disagreements** |
+| 1,680 made-up news-day scenarios | **0 violations** (the five basket coins signal from minute 61 to 75 when the first hour moved more than 0.3%) |
+| Engine unit tests | **54 pass** (10 for the basket, 10 for the trend) |
+| Weekly trend, live path vs history | 60 weekly checks × 3 coins, **all match** |
+| Server functions (watchdog, alerts, connector, sync) | **15 pass** |
+| Every screen and state in a real browser | **All pass**: 4 screen sizes × light and dark; every state (the five-coin ticket, one basket coin, the trend's orders and a quiet week, paused rules, news checks, failures); the trend sheet and Done; pull to refresh; the Trend tab's chart read with a pointer; Settings; reduced motion |
 
 ---
 
@@ -149,7 +237,7 @@ Chart setups are off because replays lost money: 3,900 moments in 2020–26 gave
 
 ---
 
-## 3. Small signals (ETH on Fed nights)
+## 3. Small signals (ETH on Fed nights; replaced in 1.5 by the Fed basket, section 0.5)
 
 **The evidence.**
 
@@ -466,19 +554,21 @@ one contract note.
 
 ## 6. Known limits and open items
 
-- **ETH small signals are unproven**: about a 1-in-9 chance of no edge. Watch the "Small signals" score in Record.
-  Turn them off in Settings if you don't want them.
+- **The Fed basket is likely, not proven**: its 90% range starts just below zero. Watch the "Fed basket" score in
+  Record. Turn it off in Settings if you don't want it.
+- **The weekly trend has had a flat stretch**: −5.9% since January 2025, against +15.1% a year over six years. It is
+  built for years, not weeks. Its positions are small for a small account (section 0.5).
 - **SOL's own rule is the only proven one, and it is thin.** It passed 1 of 108 tests and replicates on perpetuals.
   But its last 12 trades averaged about +0.10R, and on BTC the same rule fails, and fails worse with late entry or
   double costs. Size stays at half until your own record proves it.
 - **Exchange minimums and lot sizes** come from Binance. CoinSwitch's may differ (section 3).
 - **The app must be open at minute 61–75 of a Fed night**, or you act on the phone alert. Alerts need `NTFY_TOPIC` in
-  Netlify and the ntfy app.
+  Netlify and the ntfy app (or Telegram). The server reads Coinbase prices, so on a night when a coin's move is right at
+  0.3% the alert and the app can disagree: the app decides.
 - **Chart signals stay off.** No chart setup earned a signal in 6½ weeks of real-data replay, even with the switches
   open.
 - **TDS on futures**: check a CoinSwitch contract note.
 - **Not yet built** (from the research plan):
-  - pooling the history across coins;
   - learning slippage from your fills;
   - limit-entry options for the news rules;
   - GDP and PCE studies.
@@ -486,6 +576,11 @@ one contract note.
 ---
 
 ## 7. How to test tomorrow
+
+*For version 1.5, steps 2, 3, 6, 7 and 8 change: the footer says **Engine 1.5.0**; Settings shows "Fed basket" (on),
+"Weekly trend" (on, 50%) and "Send a test alert"; on 9 Dec all five coins can signal together in one ticket; Record
+shows a "Fed basket" score and a "Weekly trend" tab; Claude's `vigil_status` labels "(Fed basket)" and lists the trend.
+Today shows the weekly trend card; on Monday 2 Nov after 05:30 IST it shows that week's orders, if any.*
 
 1. **Merge.** Open https://github.com/vasisht-615/trinetra/compare/main...claude/watchdog-ntfy-fees?expand=1 and click
    **Create pull request**, then **Merge pull request**. Netlify deploys in a minute or two.
@@ -510,7 +605,16 @@ one contract note.
 
 ## 8. Files changed in the follow-up
 
-| File | Change |
+| File | Change (1.5) |
+|---|---|
+| `site/engine/scripts/desk.py` | The Fed basket (`BASKET_COINS`, `basket_rule`, pooled stats, 15% sizing, tracked as "fed basket"); the weekly trend (`trend_path`, `trend_report`, the `trend` command, `today` carries it); a long daily history on the fake exchange; version 1.5.0 |
+| `site/engine/references/trend_backtest.json` | The trend's long test, made by `tests/engine/trend_backtest.py` |
+| `site/app.js`, `site/app.css` | The basket ticket, the trend card and its Record tab, Settings for both, phone-alert setup and test, grouped alarms, the interactive layer |
+| `netlify/lib/watchdog.mjs`, `netlify/functions/watchdog.mjs`, `netlify/functions/alerts.mjs` | Five-coin Fed alert with "I'm on it" and one repeat, Monday trend alert, Telegram, the test alert |
+| `netlify/functions/mcp.mjs` | The basket and the trend for Claude |
+| `tests/*` | Basket and trend tests, the matrix and Fed-night check for five coins, `trend_backtest.py`, `check_trend_live.py`, the browser campaign |
+
+| File | Change (1.4) |
 |---|---|
 | `site/engine/scripts/desk.py` | `SMALL_RULES`, `small_rule`; tier in `analyse_event`, `order_candidates`, `fit_hold_to_calendar`, `cmd_plan` (`--tier`, the minimum-order lift), `engine_decision`, `run_checks`, `track_ideas`, `probation_status`, journal; Fed-night order; config `small_signals`, `small_signal_risk`; version 1.4.0 |
 | `site/app.js`, `site/app.css` | Small-signal ticket, chips, alerts, title, coin page, Record score and filter, Settings switch, paused messages, feed tier |
@@ -526,8 +630,8 @@ one contract note.
 
 ```bash
 npm ci
-node --test tests/*.test.mjs                                   # server functions (12)
-python3 -m unittest discover -s tests/engine -p 'test_*.py'    # engine edge cases (44)
+node --test tests/*.test.mjs                                   # server functions (15)
+python3 -m unittest discover -s tests/engine -p 'test_*.py'    # engine edge cases, basket and trend (54)
 python3 tests/engine/run_matrix.py                             # 1,680 news-day scenarios
 node tests/app/qa.cjs                                          # the app in a browser
 # real Binance history (needs data.binance.vision):
@@ -536,6 +640,8 @@ python3 tests/engine/replay_history.py --kinds FOMC --rules momentum_after_60m -
 python3 tests/engine/check_fed_nights.py --since 2025-01-01 --replay fomc.json
 python3 tests/engine/replay_market.py --start 2026-09-15 --end 2026-10-30 --every 4h
 python3 tests/engine/replay_market.py --start 2026-09-16T18:50Z --end 2026-09-16T19:20Z --every 5m
+python3 tests/engine/trend_backtest.py --write                 # the weekly trend's long test (the file the app shows)
+python3 tests/engine/check_trend_live.py                       # the trend's live path vs the archive, week by week
 ```
 
 After editing anything in `site/engine`, run `python3 tools/stamp_build.py` so installed apps load the new engine.

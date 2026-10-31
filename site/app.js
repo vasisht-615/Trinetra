@@ -2,7 +2,7 @@
    checking in the background, and logs what happened so problems can be diagnosed. Anything that came from an exchange,
    a feed or Claude is shown as text, never as HTML. */
 "use strict";
-const BUILD = "1.4.0-e0c485fb1b3a";
+const BUILD = "1.5.0-040b41d26a52";
 
 // ================================================================ engine calls
 // The engine runs only in the one tab that holds the "desk-engine" lock: two tabs saving their own copies of the data
@@ -60,6 +60,7 @@ function el(tag, attrs, ...kids) {
     if (v === null || v === undefined || v === false) continue;
     if (k === "class") n.className = v;
     else if (k === "text") n.textContent = v;
+    else if (k === "style") String(v).split(";").forEach((d) => { const i = d.indexOf(":"); if (i > 0) n.style.setProperty(d.slice(0, i).trim(), d.slice(i + 1).trim()); });   // CSSOM: the CSP allows no style attributes
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v === true ? "" : v);
   }
@@ -200,7 +201,7 @@ const S = {
   health: null, signalPlans: {}, records: null, perp: null, selftest: null, persisted: null, updateReady: false, coin: {}, pxPrev: {}, pxSeen: 0,
 };
 const KIND = {
-  FOMC: { name: "Fed decision", plan: "The one night the tested rule can fire (SOL). Keep the app open: it checks again by itself 61 minutes after the decision, and a signal gives you 15 minutes to place a market order." },
+  FOMC: { name: "Fed decision", plan: "The one night the tested rule can fire: the Fed basket, all five coins. Keep the app open: it checks again by itself 61 minutes after the decision, and a signal gives you 15 minutes to place market orders." },
   CPI: { name: "US inflation (CPI)", plan: "No proven rule for this release. The engine keeps you flat from 60 minutes before to 30 minutes after it, and blocks any trade whose hold would cross it." },
   NFP: { name: "US jobs report", plan: "No proven rule for this release. The engine keeps you flat from 60 minutes before to 30 minutes after it, and blocks any trade whose hold would cross it." },
   PPI: { name: "US producer prices (PPI)", plan: "No proven rule for this release. The engine keeps you flat around it, from 60 minutes before to 30 minutes after." },
@@ -324,6 +325,8 @@ async function runToday(reason) {
       try { S.signalPlans[c.symbol] = JSON.parse(await call("read_text", c.run_dir + "/plan.json")); } catch (e) { log("error", "signal plan unreadable for " + c.symbol); }
     }
     if ((T.signals || []).length) notifySignals(T);
+    const due = trendDue(T.trend);
+    if (due.length && !isDemo) notify("Weekly trend: " + due.map(trendAct).join(", "), "At 1x, no stop, any time this week. Open Trinetra and tap Copy the orders.", "trend-" + trendChecked(T.trend));
     S.agentText = await buildAgentText(null).catch(() => null);
     if (!isDemo) {
       try { S.health = JSON.parse(await call("health", JSON.stringify(watchlist()))); }
@@ -405,14 +408,15 @@ function notify(title, body, key) {
   toast(title + (body ? ". " + body : ""));
 }
 function notifySignals(T) {
-  for (const c of T.signals || []) {
+  const sigs = T.signals || [], bk = sigs.filter(isBasket);
+  for (const c of sigs) {
     const cd = c.candidate || {};
     const key = c.symbol + "|" + cd.setup + "|" + (cd.expires || "");
-    if (store("desk-notified") === key) continue;
-    store("desk-notified", key);
-    log("signal", "SIGNAL " + c.symbol + " " + cd.setup + " " + cd.side, { entry: cd.entry, stop: cd.stop, target: cd.target1, expires: cd.expires, demo: S.todayDemo });
+    if (noteSeen("sig-" + key)) continue;
+    log("signal", "SIGNAL " + c.symbol + " " + cd.setup + " " + cd.side, { entry: cd.entry, stop: cd.stop, target: cd.target1, expires: cd.expires, demo: S.todayDemo, tier: c.tier || null });
     if (S.todayDemo) continue;
-    const title = (isSmall(c) ? "Small signal: " : "") + (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
+    if (bk.length > 1 && isBasket(c)) { c._alarm = true; continue; }        // the basket's coins share one alarm, below
+    const title = (isBasket(c) ? "Fed basket: " : "") + (cd.side === "short" ? "Sell " : "Buy ") + coinOf(c.symbol) + " now";
     const plan = S.signalPlans[c.symbol] || {}, sell = cd.side === "short";
     const e = plan.entry || cd.entry, st = plan.stop || cd.stop, t1 = ((plan.targets || [])[0] || {}).price || cd.target1;
     const pct = (a, b) => num(Math.abs(a - b) / a * 100, 2) + "%";
@@ -422,6 +426,16 @@ function notifySignals(T) {
     // a signal is the one alert that must not be missed: the phone/computer notification (when allowed), a sound,
     // a vibration, a banner that stays until tapped, and the tab title flashing until Trinetra is looked at
     showNote(title, body, key);
+    log("app", "alert: " + title + ": " + body);
+    signalAlarm(title, body);
+  }
+  const fresh = bk.filter((c) => c._alarm);
+  if (fresh.length) {
+    const cd = fresh[0].candidate || {}, sides = uniq(fresh.map((c) => (c.candidate || {}).side));
+    const title = "Fed basket: " + (sides.length === 1 ? (sides[0] === "short" ? "sell " : "buy ") : "trade ") + fresh.map((c) => coinOf(c.symbol)).join(", ") + " now";
+    const body = "Market orders before " + clock(cd.expires) + ": " + fresh.map((c) => { const p = S.signalPlans[c.symbol] || {}, x = c.candidate || {};
+      return (x.side === "short" ? "sell " : "buy ") + (p.qty ? num(p.qty, 4) + " " : "") + coinOf(c.symbol); }).join(", ") + ". Open Trinetra for the stops and targets (Copy all orders).";
+    showNote(title, body, "basket|" + (cd.expires || ""));
     log("app", "alert: " + title + ": " + body);
     signalAlarm(title, body);
   }
@@ -777,10 +791,11 @@ function recordText(R) {
     return Rs.length ? signed(Rs.reduce((a, b) => a + b, 0) / Rs.length) + "R a call over " + Rs.length + " scored (" + Rs.filter((x) => x > 0).length + " won)"
       : "no scored calls yet" + (xs.length ? " (" + xs.length + " waiting)" : "");
   };
-  const L = ["Engine signals: " + sc((r) => r.decision === "TRACK" && r.track_kind === "signal"), "Small signals (unproven, quarter size): " + sc((r) => r.decision === "TRACK" && r.track_kind === "small signal"),
+  const L = ["Engine signals: " + sc((r) => r.decision === "TRACK" && r.track_kind === "signal"),
+    "Fed basket (five coins, 15% risk each): " + sc((r) => r.decision === "TRACK" && ["fed basket", "small signal"].includes(r.track_kind)),
     "Agent desk: " + sc((r) => r.decision === "TRACK" && r.track_kind === "agent desk"),
     "Your trades: " + sc((r) => r.decision === "TAKE"), "", "Recent calls (newest first):"];
-  for (const r of rows.filter((r) => r.decision !== "TRACK" || ["signal", "agent desk"].includes(r.track_kind)).slice(0, 15)) {
+  for (const r of rows.filter((r) => r.decision !== "TRACK" || ["signal", "fed basket", "agent desk"].includes(r.track_kind)).slice(0, 15)) {
     L.push("  " + new Date(r.ts).toISOString().slice(0, 16).replace("T", " ") + " UTC " + coinOf(r.symbol) + " " + (r.side || "") + " [" + (r.decision === "TAKE" ? "you" : r.track_kind || r.decision) + "] "
       + (r.status === "resolved" ? signed((r.outcome || {}).R) + "R " + ((r.outcome || {}).result || "") : r.status));
   }
@@ -802,7 +817,9 @@ async function buildFeed() {
       signals: (T.signals || []).map((c) => ({ symbol: c.symbol, decision: c.decision, hold_note: c.hold_note, tier: c.tier,
         candidate: pick(c.candidate, ["setup", "side", "entry", "stop", "target1", "target2", "expires", "close_by", "evidence"]),
         plan: S.signalPlans[c.symbol] ? pick(S.signalPlans[c.symbol], ["entry", "entry_type", "stop", "targets", "qty", "notional", "leverage", "max_loss_at_stop", "close_by", "notes"]) : null })),
-      watch: T.watch || [], headlines: (T.headlines || []).map((h) => pick(h, ["source", "title", "link", "t"])), errors: (T.errors || []).slice(0, 10), news_check: T.news_check || null },
+      watch: T.watch || [], headlines: (T.headlines || []).map((h) => pick(h, ["source", "title", "link", "t"])), errors: (T.errors || []).slice(0, 10), news_check: T.news_check || null,
+      trend: T.trend ? { next_check: T.trend.next_check, share: T.trend.share, done: trendDone(T.trend), model: T.trend.model ? pick(T.trend.model, ["since", "total_pct", "last_52w_pct", "worst_drop_pct"]) : null,
+        coins: (T.trend.coins || []).map((c) => ({ coin: c.coin, state: c.state, action: c.action, ups: c.ups, w: c.w, checked_at: c.checked_at, usdt: (c.size || {}).usdt, qty: qtyTxt(c.size), below_min: (c.size || {}).below_min })) } : null },
     packets, upcoming: S.upcoming || [], record,
     settings: { watchlist: watchlist(), currency: v.equity_currency, risk_pct: v.risk_per_trade_pct, max_leverage: v.max_leverage },
     health: healthItems().map((x) => ({ level: x.level, title: x.title })) };
@@ -945,18 +962,19 @@ function watchAlerts() {
   }
   if (fn) {
     const t = fn.fed.t;
-    if (now >= t - 30 * MIN && now < t - 5 * MIN) notify("Fed decision at " + clock(t), "Keep Trinetra open from now, alerts on. Nothing to do until it checks SOL at " + clock(fn.read) + ".", "fed30-" + t);
-    if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Do nothing now. Trinetra checks SOL at " + clock(fn.read) + " and alerts you.", "fed5-" + t);
-    if (now >= fn.read - 5 * MIN && now < fn.read) notify("SOL check in 5 minutes", "Open " + venueName() + " on the SOL perpetual now, so you can order quickly if Trinetra signals.", "fedready-" + t);
+    if (now >= t - 30 * MIN && now < t - 5 * MIN) notify("Fed decision at " + clock(t), "Keep Trinetra open from now, alerts on. Nothing to do until it checks the Fed basket at " + clock(fn.read) + ".", "fed30-" + t);
+    if (now >= t - 5 * 60000 && now < t) notify("Fed decision in 5 minutes", "Do nothing now. Trinetra checks the Fed basket at " + clock(fn.read) + " and alerts you.", "fed5-" + t);
+    if (now >= fn.read - 5 * MIN && now < fn.read) notify("Fed basket check in 5 minutes", "Open " + venueName() + " on the futures screen now, so you can order quickly if Trinetra signals.", "fedready-" + t);
     // The read-time outcome, only from a check that started at or after the read time, and only what it really found:
-    // "no signal" needs SOL to have been checked; a SOL check that failed or was paused says so instead.
+    // "no signal" needs the basket coins to have been checked; a check that failed or was paused says so instead.
     if ((S.todayFrom || 0) >= fn.read && now < fn.read + 30 * 60000 && S.today && !(S.today.signals || []).length) {
-      const sol = (S.today.coins || []).find((c) => c.symbol === "SOLUSDT");
+      const bk = (S.today.coins || []).filter((c) => BASKET.includes(coinOf(c.symbol)));
+      const bad = bk.filter((c) => c.error), paused = bk.filter((c) => c.blocked_signal);
       const last = now >= fn.read + 14 * 60000;
-      if (sol && sol.error && last) notify("Trinetra couldn't check SOL tonight", "It couldn't get SOL's prices in time, so the Fed rule was not checked. This is not a 'no signal' answer.", "fedsolfail-" + t);
-      else if (sol && sol.error) notify("Trinetra couldn't check SOL yet", "It's trying again every 90 seconds until " + clock(fn.read + 14 * 60000) + ". Keep Trinetra open.", "fedsolretry-" + t);
-      else if (sol && sol.blocked_signal) notify("The SOL rule fired, but it's paused", "The news check paused new trades. Open Trinetra for the reason; nothing to place.", "fedblocked-" + t);
-      else if (sol) notify("No SOL signal tonight", "The Fed rule didn't fire. Nothing to do: you're done for the night.", "fednone-" + t);
+      if (bk.length && bad.length === bk.length && last) notify("Trinetra couldn't check the Fed basket tonight", "It couldn't get the coins' prices in time, so the Fed rule was not checked. This is not a 'no signal' answer.", "fedsolfail-" + t);
+      else if (bad.length && !last) notify("Trinetra couldn't check " + bad.map((c) => coinOf(c.symbol)).join(", ") + " yet", "It's trying again every 90 seconds until " + clock(fn.read + 14 * 60000) + ". Keep Trinetra open.", "fedsolretry-" + t);
+      else if (paused.length) notify("The Fed-basket rule fired, but it's paused", "The news check or a rule paused new trades. Open Trinetra for the reason; nothing to place.", "fedblocked-" + t);
+      else if (bk.length) notify("No Fed-basket signal tonight", "The first hour didn't move enough. Nothing to do: you're done for the night.", "fednone-" + t);
     }
     if (now >= fn.read && now < fn.read + 15 * 60000 && S.todayError) notify("Trinetra can't check the Fed rule", "It couldn't reach the market: check your connection and keep Trinetra open.", "fedfail-" + t);
   }
@@ -1029,6 +1047,7 @@ function showNow(v) {
   VIEWS.forEach((x) => ($("view-" + x).hidden = x !== v));
   const tab = v === "coins" ? "home" : v;
   document.querySelectorAll(".nav a").forEach((a) => (a.dataset.view === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+  inkNav();
   if (!engineReady) return;
   if (v === "home") renderHome();
   if (v === "coins") renderCoins();
@@ -1139,12 +1158,12 @@ function coinStatus(k, c) {
   // one line under each coin: what the engine sees, and what stands between it and a signal
   if (!c) return ["", "Waiting for the first check."];
   const d = String(c.decision || ""), sets = (c.glance && c.glance.setups) || [];
-  if (d.startsWith("SIGNAL")) return ["sig", (isSmall(c) ? "Small signal (unproven, a quarter of your risk): " : "Signal: ") + sideWord((c.candidate || {}).side) + " " + k + ". The ticket is at the top."];
+  if (d.startsWith("SIGNAL")) return ["sig", (isBasket(c) ? "Fed basket (15% of your risk): " : "Signal: ") + sideWord((c.candidate || {}).side) + " " + k + ". The ticket is at the top."];
   if (c.blocked_signal) return ["care", "Its tested rule fired but is paused. See the top of the page."];
   if (c.error) return ["bad", "Not checked: no market data in the last check."];
   if (d === "WAIT") return ["fed", "Wait: " + plain(c.why || "").slice(0, 120)];
   const fn = fedNight();
-  if (k === "SOL" && fn && fn.fed.t - Date.now() < 72 * HOUR && Date.now() < fn.read + 15 * MIN) return ["fed", "Fed rule: Trinetra checks it " + dayTime(fn.read) + "."];
+  if (BASKET.includes(k) && fn && fn.fed.t - Date.now() < 72 * HOUR && Date.now() < fn.read + 15 * MIN) return ["fed", "Fed basket: Trinetra checks it " + dayTime(fn.read) + "."];
   const free = sets.filter((x) => !(x.gates || []).length), held = sets.filter((x) => (x.gates || []).length);
   if (free.length) {
     const off = (c.blocks || []).some((b) => /chart-setup signals are off/.test(b)), x = free[0];
@@ -1321,7 +1340,7 @@ function verdictInner() {
   }
   if (fn && fn.live && Date.now() < fn.read) {
     h = "Wait for " + clock(fn.read) + ".";
-    why = "The Fed decided at " + clock(fn.fed.t) + ". The SOL rule reads the first hour, so Trinetra checks again at " + clock(fn.read) + " by itself. Keep it open.";
+    why = "The Fed decided at " + clock(fn.fed.t) + ". The Fed-basket rule reads the first hour, so Trinetra checks all five coins again at " + clock(fn.read) + " by itself. Keep it open.";
   } else if (fn && fn.fed.t - Date.now() < 48 * 3600000 && fn.fed.t > Date.now()) {
     why = "Nothing has an edge right now. The Fed decision is in " + inWords(fn.fed.t) + ": the one night the tested rule can fire.";
   }
@@ -1330,9 +1349,10 @@ function verdictInner() {
     // a tested rule fired and only the rules check stopped it: say exactly that, never "no tested edge"
     const bs = blocked.blocked_signal, k = coinOf(blocked.symbol);
     const byNews = (bs.by || []).some((b) => /news check/i.test(b)), tooSmall = (bs.by || []).some((b) => /exchange minimum/i.test(b));
-    const what = (bs.tier === "small" ? "The small " + k + " signal" : "The tested " + k + " rule") + " fired (" + (bs.side === "short" ? "sell" : "buy") + "), but ";
+    const many = coins.filter((c) => c.blocked_signal).map((c) => coinOf(c.symbol));
+    const what = (isBasket(bs) ? "The Fed-basket rule on " + many.join(", ") : "The tested " + k + " rule") + " fired (" + (bs.side === "short" ? "sell" : "buy") + "), but ";
     wrap.dataset.tone = "care";
-    h = k + (bs.tier === "small" ? " small signal paused." : " rule paused.");
+    h = isBasket(bs) ? (many.length > 1 ? "Fed basket paused." : k + " in the Fed basket paused.") : k + " rule paused.";
     why = tooSmall ? what + "at your capital and risk per trade the order is smaller than the exchange's minimum order, so it can't be placed. "
         + "Raise your capital or your risk per trade in Settings to take signals like it."
       : what + (byNews ? "the news check paused new trades" : "a rule blocked it: " + plain((bs.by || []).join("; ")))
@@ -1344,13 +1364,62 @@ function verdictInner() {
   add(wrap, [el("h1", {}, h), el("p", { class: "why" }, why), marketPulse(T), when]);
   return wrap;
 }
-// A small signal: a news rule that made money on its own history and again on Binance perpetuals, but is not proven
-// (its range still includes zero). It is sized at a quarter of normal risk and scored apart from proven signals.
-const isSmall = (c) => !!c && (c.tier === "small" || (c.plan && c.plan.tier === "small"));
-const SMALL_WHY = "Small and unproven: ETH's first-hour Fed rule averaged +0.24R a trade over 39 Fed nights on Binance perpetuals, after costs and funding, "
-  + "but that could still be luck (about 1 chance in 9). So it is sized small (a quarter of your normal risk, or the exchange's minimum order if that is larger, never more than half) and scored apart from proven signals. "
-  + "On most Fed nights ETH moves with SOL: taken together they are one bigger bet, not two.";
-function ticketBlock(c, given, example) {
+// The Fed basket: on Fed nights the same first-hour rule runs on all five coins and they are judged together, one result
+// per night. Each coin is sized at 15% of normal risk, so the five risk about three-quarters of one normal trade, and the
+// basket is scored apart from proven signals. Older records call it a small signal.
+const BASKET = ["BTC", "ETH", "SOL", "XRP", "LINK"];
+const isBasket = (c) => !!c && ["basket", "small"].includes(c.tier || (c.plan && c.plan.tier));
+const BASKET_WHY = "The Fed basket: the same first-hour rule on all five coins, judged together. Over 48 Fed nights on Binance perpetuals it averaged +0.22R a night after costs and funding; "
+  + "its 90% range starts just below zero (−0.01R), so it is likely but not proven. Each coin is sized at 15% of your normal risk (or the exchange's minimum order if that is larger, never more than half), "
+  + "so all five risk about three-quarters of one normal trade. The coins usually move together: it is one bet spread over five coins.";
+function orderText(c, given) {
+  const cd = c.candidate || {}, plan = given || S.signalPlans[c.symbol] || {};
+  const sell = cd.side === "short", coin = coinOf(c.symbol);
+  const e = plan.entry || cd.entry, st = plan.stop || cd.stop, t1 = ((plan.targets || [])[0] || {}).price || cd.target1;
+  const stopPct = Math.abs(e - st) / e * 100, tgtPct = Math.abs(t1 - e) / e * 100;
+  return coin + " perpetual: " + (sell ? "SELL " : "BUY ") + (plan.qty ? num(plan.qty, 4) + " " + coin + " " : "") + "at market, about " + num(e) + ". Stop " + num(st) + " (" + num(stopPct, 2) + "% "
+    + (sell ? "above" : "below") + " the fill). Target " + num(t1) + " (" + num(tgtPct, 2) + "% " + (sell ? "below" : "above") + ")." + (plan.close_by ? " Close by " + dayTime(plan.close_by) + "." : "");
+}
+// The Fed basket's coins in one ticket: every order in a list, one copy for all of them, and each coin's own ticket
+// folded below (its own "I placed it", so each fill is logged).
+function basketBlock(sigs) {
+  const cd0 = sigs[0].candidate || {}, sides = uniq(sigs.map((c) => (c.candidate || {}).side));
+  const sell = sides.length === 1 && sides[0] === "short", plans = sigs.map((c) => S.signalPlans[c.symbol] || {});
+  const loss = plans.reduce((a, p) => a + (Number(p.max_loss_at_stop) || 0), 0), inr = plans.reduce((a, p) => a + (Number((p.inr || {}).max_loss) || 0), 0);
+  const cur = (plans.find((p) => p.inr) || {}).inr;
+  const row = (c, i) => {
+    const cd = c.candidate || {}, p = plans[i], k = coinOf(c.symbol), sl = cd.side === "short";
+    const e = p.entry || cd.entry, st = p.stop || cd.stop, t1 = ((p.targets || [])[0] || {}).price || cd.target1;
+    return el("li", { class: sl ? "sell" : "buy", style: "--i:" + i },
+      el("b", { class: "bk-coin" }, k),
+      el("span", { class: "bk-qty" }, el("span", { class: "bk-side" }, sl ? "Sell" : "Buy"), " " + (p.qty ? num(p.qty, 4) : "your size")),
+      el("span", { class: "bk-lv" }, "stop " + num(Math.abs(e - st) / e * 100, 2) + "% · target " + num(Math.abs(t1 - e) / e * 100, 2) + "%"),
+      S.todayDemo ? null : el("button", { class: "btn small", type: "button", onclick: () => logTrade(c, p) }, "Placed"));
+  };
+  const t = el("div", { class: "ticket basket " + (sides.length === 1 ? (sell ? "sell" : "buy") : "mixed") },
+    el("div", { class: "tk-head" },
+      el("div", {}, el("p", { class: "tk-kick" }, el("i", { class: "tk-live", "aria-hidden": "true" }), "Fed basket, " + setupName(cd0.setup)),
+        el("h1", {}, sides.length === 1 ? (sell ? "Sell " : "Buy ") + sigs.length + " coins now." : "Trade " + sigs.length + " coins now.")),
+      cd0.expires ? ringEl(cd0.expires, cd0.expires - 15 * MIN) : null),
+    cd0.expires ? el("p", { class: "deadline" }, "A market order on each before ", el("b", {}, clock(cd0.expires)), ". ",
+      el("span", { "data-left": String(cd0.expires) }, inWords(cd0.expires) + " left.")) : null,
+    el("ol", { class: "bk-list" }, sigs.map(row)),
+    el("p", { class: "fine" }, loss ? "If every stop is hit you lose about " + num(loss, 2) + " USDT" + (cur ? " (" + cur.currency + " " + num(inr, 0) + ")" : "") + " in all. " : "",
+      "Stops and targets are set from your own fill on each coin."),
+    S.todayDemo ? el("p", { class: "fine" }, el("b", {}, "Demo data: this is not a real signal.")) :
+      el("div", { class: "row" },
+        el("button", { class: "btn solid", type: "button", onclick: (ev) => copyText(sigs.map((c, i) => orderText(c, plans[i])).join("\n"), "All " + sigs.length + " orders", ev.currentTarget) }, ic("copy"), "Copy all orders"),
+        el("button", { class: "btn", type: "button", onclick: (ev) => withSpin(ev.currentTarget, async () => {
+          let n = 0;
+          for (const c of sigs) if (await logPaper(c, true)) n += 1;
+          toast(n === sigs.length ? "Tracking all " + n + " on paper." : "Tracking " + n + " of " + sigs.length + " on paper; the others could not be logged.");
+        }) }, "Track all on paper")),
+    el("details", { class: "more" }, el("summary", {}, el("span", {}, "Why five coins, at 15% each?"), ic("chev")), el("div", {}, el("p", { class: "small" }, BASKET_WHY))),
+    el("details", { class: "more" }, el("summary", {}, el("span", {}, "Each coin's full ticket ", el("span", { class: "n" }, "(" + sigs.length + ")")), ic("chev")),
+      el("div", {}, sigs.map((c) => ticketBlock(c, null, false, true)))));
+  return arriveOnce(t, "basket " + sigs.map((c) => c.symbol).join(",") + " " + cd0.expires);
+}
+function ticketBlock(c, given, example, inner) {
   const cd = c.candidate || {}, plan = given || S.signalPlans[c.symbol] || {};
   const sell = cd.side === "short", coin = coinOf(c.symbol);
   const e = plan.entry || cd.entry, st = plan.stop || cd.stop;
@@ -1358,21 +1427,20 @@ function ticketBlock(c, given, example) {
   const stopPct = Math.abs(e - st) / e * 100, tgtPct = Math.abs(t1 - e) / e * 100;
   const isEvent = cd.kind === "event" || !!(cd.reprice || cd.signal_time);
   const rm = Number(plan.risk_multiplier || 1), nm = Number(plan.news_multiplier || 1);
-  const sizeTxt = plan.tier === "small" ? " Sized at " + Math.round(rm * 100) + "% of your normal risk: a small signal" + (nm < 1 ? ", and half again for the news check." : ".")
+  const sizeTxt = isBasket(plan) ? " Sized at " + Math.round(rm * 100) + "% of your normal risk: one of the Fed-basket coins" + (nm < 1 ? ", and half again for the news check." : ".")
     : rm < 1 && nm < 1 ? " Sized at a quarter of your normal risk: half while your record is new, and half again for the news check."
     : rm < 1 ? " Sized at half your normal risk while your record is new." : nm < 1 ? " Sized at half your normal risk because of the news check." : "";
-  const order = coin + " perpetual: " + (sell ? "SELL " : "BUY ") + (plan.qty ? num(plan.qty, 4) + " " + coin + " " : "") + "at market, about " + num(e) + ". Stop " + num(st) + " (" + num(stopPct, 2) + "% "
-    + (sell ? "above" : "below") + " the fill). Target " + num(t1) + " (" + num(tgtPct, 2) + "% " + (sell ? "below" : "above") + ")." + (plan.close_by ? " Close by " + dayTime(plan.close_by) + "." : "");
-  const small = isSmall(c) || plan.tier === "small";
-  const t = el("div", { class: "ticket " + (sell ? "sell" : "buy") + (example ? " example" : "") + (small ? " small" : "") },
+  const order = orderText(c, plan);
+  const small = isBasket(c) || isBasket(plan);
+  const t = el("div", { class: "ticket " + (sell ? "sell" : "buy") + (example ? " example" : "") + (small ? " basket" : "") + (inner ? " inner" : "") },
     el("div", { class: "tk-head" },
       el("div", {}, el("p", { class: "tk-kick" }, el("i", { class: "tk-live", "aria-hidden": "true" }),
-        (example ? "Example" : small ? "Small signal" : "Signal") + (cd.setup ? ", " + setupName(cd.setup) : "")),
+        (example ? "Example" : small ? "Fed basket" : "Signal") + (cd.setup ? ", " + setupName(cd.setup) : "")),
         el("h1", {}, (sell ? "Sell " : "Buy ") + coin + " now.")),
       cd.expires ? ringEl(cd.expires, cd.expires - 15 * MIN) : null),
     cd.expires ? el("p", { class: "deadline" }, (isEvent ? "A market order before " : "Order valid until "), el("b", {}, clock(cd.expires)), ". ",
       el("span", { "data-left": String(cd.expires) }, inWords(cd.expires) + " left.")) : null,
-    small ? el("p", { class: "tk-small" }, SMALL_WHY) : null,
+    small && !inner ? el("details", { class: "more tk-why" }, el("summary", {}, el("span", {}, "Why 15% of your risk?"), ic("chev")), el("div", {}, el("p", { class: "small" }, BASKET_WHY))) : null,
     el("div", { class: "tk-body" }, e && st && t1 ? ladder(sell, e, st, t1, t2) : null,
       el("ol", { class: "steps" },
         el("li", {}, el("span", {}, "On " + venueName() + ", " + coin + " perpetual: " + (sell ? "sell " : "buy "), el("b", {}, plan.qty ? num(plan.qty, 4) + " " + coin : "your size"), " at market, about " + num(e) +
@@ -1389,12 +1457,12 @@ function ticketBlock(c, given, example) {
         el("button", { class: "btn", type: "button", onclick: (ev) => copyText(order, "Order", ev.currentTarget) }, ic("copy"), "Copy the order"),
         el("button", { class: "btn", type: "button", onclick: () => logPaper(c) }, "Track on paper"),
         el("button", { class: "btn", type: "button", onclick: (ev) => askAgents(c, ev.currentTarget) }, "Second opinion")));
-  return example ? t : arriveOnce(t, "signal " + c.symbol + " " + cd.expires);
+  return example || inner ? t : arriveOnce(t, "signal " + c.symbol + " " + cd.expires);
 }
 function planFor(r) {
   if (r.kind === "FOMC") {
     const read = r.t + 61 * 60000;
-    return "The one night the tested rule can fire (SOL). Trinetra checks SOL by itself at " + clock(read) + "; a signal gives you about 15 minutes to place a market order. Keep Trinetra open, or keep the calendar reminder.";
+    return "The one night the tested rule can fire: the Fed basket, all five coins. Trinetra checks them by itself at " + clock(read) + "; a signal gives you about 15 minutes to place the market orders. Keep Trinetra open, or keep the calendar reminder.";
   }
   return (KIND[r.kind] || {}).plan || "The engine keeps you flat around it.";
 }
@@ -1416,10 +1484,10 @@ function newsDaySteps(r) {
       [t - 30 * MIN, "Open Trinetra and leave it open", "On the phone or laptop you'll use, plugged in, with alerts on." + (IOS ? " On iPhone, keep the screen on tonight (Settings, Display & Brightness, Auto-Lock: Never) and Trinetra in front." : "") +
         " No new trades on any coin from " + clock(t - HOUR) + " to " + clock(t + 30 * MIN) + "."],
       [t, "The Fed decides: do nothing", "The first hour often swings both ways. The tested rule waits for it to finish."],
-      [read - 5 * MIN, "Get ready", "Open " + venueName() + " on the SOL perpetual (SOLUSDT), so you can place an order in a minute if needed."],
-      [read, "Trinetra checks SOL by itself", "Its alert comes within a minute or two. “No SOL signal tonight” means nothing to do: you're done for the night."],
-      [by, "If it says Buy or Sell SOL: order before " + clock(by), "A market order for the size on the ticket. Then set the stop and the target at the percentages it shows, from your fill price. Tap “I placed it” and type your fill. After " + clock(by) + ", don't chase it."],
-      [close, "Close any SOL trade by " + clock(close), (clash ? "At market, an hour before " + nextReleases().filter((x) => x.t === clash.t).map(kindName).join(" and ") + " at " + clock(clash.t) + "." : "At market, 24 hours after the decision, as tested.") + " Trinetra reminds you 15 minutes before; the stop and target stay on the exchange until then."],
+      [read - 5 * MIN, "Get ready", "Open " + venueName() + " on the futures screen, so you can place orders in a minute if needed."],
+      [read, "Trinetra checks the Fed basket by itself", "BTC, ETH, SOL, XRP and LINK. Its alert comes within a minute or two. “No Fed-basket signal tonight” means nothing to do: you're done for the night."],
+      [by, "If it says Buy or Sell: order before " + clock(by), "A market order on each coin it lists, for the size on the ticket (Copy all orders gives the list). Then set each stop and target at the percentages it shows, from your fill. Tap “Placed” and type your fill. After " + clock(by) + ", don't chase it."],
+      [close, "Close any Fed-night trade by " + clock(close), (clash ? "At market, an hour before " + nextReleases().filter((x) => x.t === clash.t).map(kindName).join(" and ") + " at " + clock(clash.t) + "." : "At market, 24 hours after the decision, as tested.") + " Trinetra reminds you 15 minutes before; the stop and target stay on the exchange until then."],
     ];
   }
   return [
@@ -1474,7 +1542,7 @@ function nextBlock() {
   if (!nx) return el("section", { class: "next" }, el("p", { class: "kicker" }, "Next major news"), el("p", {}, "No release in the bundled schedule."));
   const isFed = nx.kind === "FOMC", fed = list.find((r) => r.kind === "FOMC");
   const soon = nx.t - Date.now() < 36 * HOUR;
-  return el("section", { class: "next" + (isFed ? " fed" : "") },
+  return el("section", { class: "next glow" + (isFed ? " fed" : "") },
     el("div", { class: "next-head" },
       el("div", {}, el("p", { class: "kicker" }, nx.t <= Date.now() ? "Major news, now" : "Next major news"),
         el("p", { class: "name" }, kindName(nx)), el("p", { class: "date" }, dayTime(nx.t))),
@@ -1482,7 +1550,7 @@ function nextBlock() {
     soon ? [el("h3", { class: "h3" }, "What to do, step by step"), stepsList(nx)]
       : [el("p", { class: "plan" }, planFor(nx)),
         el("details", { class: "more" }, el("summary", {}, "What to do on the day, step by step", ic("chev")), el("div", {}, stepsList(nx)))],
-    !isFed && fed ? el("p", { class: "small muted" }, "Next Fed night: ", el("b", {}, dayTime(fed.t)), ". The SOL rule can fire about an hour after it.") : null,
+    !isFed && fed ? el("p", { class: "small muted" }, "Next Fed night: ", el("b", {}, dayTime(fed.t)), ". The Fed basket can fire about an hour after it.") : null,
     el("div", { class: "row" }, alertButton(), stepsCalButton(nx),
       el("button", { class: "btn quiet", type: "button", onclick: async () => { download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar"); log("app", "fed nights calendar downloaded"); } }, "Fed nights to calendar")));
 }
@@ -1547,7 +1615,7 @@ function upcomingBlock() {
       const i = evs.indexOf(r);
       return el("li", { "data-i": String(i) }, el("details", { class: "ev" },
         el("summary", {}, el("span", { class: "d" }, F_DAY.format(new Date(r.t))),
-          el("span", { class: "t" + (r.kind === "FOMC" ? " fed" : "") }, el("b", {}, kindName(r)), " at " + clock(r.t) + (r.kind === "FOMC" ? ". The SOL rule can fire about an hour later." : ""))),
+          el("span", { class: "t" + (r.kind === "FOMC" ? " fed" : "") }, el("b", {}, kindName(r)), " at " + clock(r.t) + (r.kind === "FOMC" ? ". The Fed basket can fire about an hour later." : ""))),
         el("div", { class: "ev-body" }, stepsList(r), el("div", { class: "row" }, stepsCalButton(r)))));
     })) : el("p", { class: "small muted" }, "Nothing else in the next six weeks."),
     el("details", { class: "more" }, el("summary", {}, "The next five weeks", ic("chev")), el("div", {}, calendarGrid(evs))));
@@ -1560,7 +1628,7 @@ function pickEvent(i) {
 }
 function chipFor(c) {
   const d = String(c.decision || "");
-  if (d.startsWith("SIGNAL")) return el("span", { class: "chip sig" + (isSmall(c) ? " small" : "") }, isSmall(c) ? "Small signal" : "Signal");
+  if (d.startsWith("SIGNAL")) return el("span", { class: "chip sig" + (isBasket(c) ? " basket" : "") }, isBasket(c) ? "Fed basket" : "Signal");
   if (c.error) return el("span", { class: "chip bad" }, "Not checked");
   if (c.blocked_signal) return el("span", { class: "chip care" }, "Paused");
   if (d === "WAIT") return el("span", { class: "chip watch" }, "Wait");
@@ -1571,25 +1639,25 @@ function coinNote(k, c) {
   if (c && c.blocked_signal) return ["care", "Its tested rule fired but is paused: see the top of the page."];
   if (c && c.error) return ["", "No data in the last check."];
   const fn = fedNight();
-  if (k === "SOL" && fn && fn.fed.t - Date.now() < 72 * 3600000 && Date.now() < fn.read + 15 * 60000) return ["fed", "Fed rule: Trinetra checks it " + dayTime(fn.read) + "."];
+  if (BASKET.includes(k) && fn && fn.fed.t - Date.now() < 72 * 3600000 && Date.now() < fn.read + 15 * 60000) return ["fed", "Fed basket: Trinetra checks it " + dayTime(fn.read) + "."];
   return null;
 }
 function coinsBlock() {
   const T = S.today, byCoin = {};
   for (const c of (T && T.coins) || []) byCoin[coinOf(c.symbol)] = c;
-  const flashes = {};
-  if (T && S.pxSeen !== S.todayAt) {                       // a new check: flash the prices that moved since the last one
-    for (const [k, c] of Object.entries(byCoin)) if (c.price && S.pxPrev[k] && c.price !== S.pxPrev[k]) flashes[k] = c.price > S.pxPrev[k] ? "flash-up" : "flash-down";
+  const flashes = {}, from = {};
+  if (T && S.pxSeen !== S.todayAt) {                       // a new check: flash the prices that moved since the last one, and roll them
+    for (const [k, c] of Object.entries(byCoin)) if (c.price && S.pxPrev[k] && c.price !== S.pxPrev[k]) { flashes[k] = c.price > S.pxPrev[k] ? "flash-up" : "flash-down"; from[k] = S.pxPrev[k]; }
     for (const [k, c] of Object.entries(byCoin)) if (c.price) S.pxPrev[k] = c.price;
     S.pxSeen = S.todayAt;
   }
   const loading = !T && S.running;
   return el("section", { class: "coins-box" }, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Your coins"), el("a", { class: "small", href: "#coins" }, "Check another coin")),
     el("ul", { class: "board" + (S.coinsShown ? "" : " first") + (loading ? " loading" : ""), "aria-busy": loading ? "true" : null }, watchlist().map((k) => {
-      return loading ? el("li", { class: "skel", "aria-hidden": "true" }) : coinItem(k, byCoin[k], flashes[k]);
+      return loading ? el("li", { class: "skel", "aria-hidden": "true" }) : coinItem(k, byCoin[k], flashes[k], from[k]);
     })));
 }
-function coinItem(k, c, flash) {
+function coinItem(k, c, flash, was) {
   // a coin on the board: its last day of price, the trend on four timeframes, and what stands between it and a signal
   const g = (c && c.glance) || {}, [tone, line] = coinStatus(k, c);
   const sym = el("span", { class: "sym" }, k);
@@ -1597,7 +1665,7 @@ function coinItem(k, c, flash) {
   return el("li", {}, el("a", { class: "cc", href: "#coins/" + k, "aria-label": k + ", " + (c && c.price ? num(c.price) : "no price yet") + ". " + line + " Open its chart and checks." },
     sym, tfStrip(g.tf),
     spark(g.spark, k + ", the last 24 hours" + (g.chg24_pct !== undefined && g.chg24_pct !== null ? ": " + signed(g.chg24_pct, 2) + "%" : "")),
-    el("span", { class: "q" }, el("span", { class: "px" + (flash ? " " + flash : "") }, c && c.price ? num(c.price) : "…"), deltaEl(g.chg24_pct)),
+    el("span", { class: "q" }, rollNum(el("span", { class: "px" + (flash ? " " + flash : "") }, c && c.price ? num(c.price) : "…"), was, c && c.price), deltaEl(g.chg24_pct)),
     el("span", { class: "st" }, c ? chipFor(c) : el("span", { class: "chip" }, "Not yet"), el("span", { class: "why " + tone }, line))));
 }
 function detailsBlock() {
@@ -1654,19 +1722,120 @@ function newsBlock() {
       el("div", {}, el("ul", { class: "heads" }, heads.slice(3).map(item)),
         el("p", { class: "small muted" }, "Shown as found. The engine's signals don't depend on headlines; Claude's research reads the news in depth."))) : null);
 }
+// ================================================================ the weekly trend part
+// BTC, ETH and SOL, held or out, checked each Monday 05:30 IST when Sunday's daily bar closes. Sizes are at 1x with no
+// stop (the weekly check is the exit). The engine reads it in every Today run; "Done" marks a week's orders as placed.
+const TREND_ACTS = ["BUY", "SELL ALL", "ADD", "TRIM"];
+const trendChecked = (R) => Math.max(0, ...((R && R.coins) || []).map((c) => c.checked_at || 0));
+const trendDone = (R) => store("desk-trend-done-" + trendChecked(R)) === "1";
+const placeable = (c) => !((c.action === "BUY" || c.action === "ADD") && (c.size || {}).below_min);     // under the exchange minimum: nothing to place
+function trendDue(R) {
+  if (!R || !(R.coins || []).length || trendDone(R)) return [];
+  return Date.now() - trendChecked(R) < 7 * 86400000 ? R.coins.filter((c) => TREND_ACTS.includes(c.action) && placeable(c)) : [];
+}
+const qtyTxt = (s) => { const q = Number((s && (s.qty || s.qty_exact)) || 0); return q ? String(Number(q.toPrecision(3))) : "0"; };
+const money = (R, usdt, local) => num(usdt, 2) + " USDT" + (local !== undefined && local !== null && R.local_currency ? " (" + (R.local_currency === "INR" ? "₹" : R.local_currency + " ") + num(local, 0) + ")" : "");
+function trendAct(c) {
+  const s = c.size || {};
+  if (c.action === "BUY") return "buy " + qtyTxt(s) + " " + c.coin;
+  if (c.action === "SELL ALL") return "sell all your " + c.coin;
+  if (c.action === "ADD") return "add to " + c.coin + " (hold " + qtyTxt(s) + ")";
+  if (c.action === "TRIM") return "trim " + c.coin + " (hold " + qtyTxt(s) + ")";
+  return c.state === "HOLD" ? "keep " + c.coin : "stay out of " + c.coin;
+}
+function trendOrders(R) {
+  const L = ["Weekly trend, the " + dayTime(trendChecked(R)) + " check. Perpetuals at 1x leverage (isolated), no stop: the weekly check is the exit."];
+  for (const c of R.coins || []) {
+    const s = c.size || {}, q = qtyTxt(s);
+    if (!placeable(c)) L.push(c.coin + ": the rule says " + c.action.toLowerCase() + ", but about " + num(s.usdt, 2) + " USDT is under the exchange minimum: skip it for now.");
+    else if (c.action === "BUY") L.push(c.coin + ": BUY " + q + " " + c.coin + " at market (about " + num(s.usdt, 2) + " USDT), 1x.");
+    else if (c.action === "SELL ALL") L.push(c.coin + ": SELL your whole " + c.coin + " long at market.");
+    else if (c.action === "ADD" || c.action === "TRIM") L.push(c.coin + ": set your " + c.coin + " long to " + q + " " + c.coin + " (about " + num(s.usdt, 2) + " USDT): "
+      + (c.action === "ADD" ? "buy" : "sell") + " about " + num(Math.abs(c.change_usdt || 0), 2) + " USDT of it at market.");
+    else if (c.state === "HOLD") L.push(c.coin + ": keep your " + q + " " + c.coin + " long.");
+    else L.push(c.coin + ": stay out.");
+  }
+  return L.join("\n");
+}
+function voteDots(c) {
+  const v = c.votes || {};
+  return el("span", { class: "votes", role: "img", "aria-label": c.ups + " of 5 trend lengths up" },
+    ["10", "20", "40", "80", "160"].map((n, i) => el("i", { class: v[n] > 0 ? "up" : "down", style: "--i:" + i, title: n + " days: " + (v[n] > 0 ? "up" : "down") })));
+}
+function trendRow(R, c) {
+  // one line per coin: in or out, the five votes, and the position to hold
+  const s = c.size || {}, hold = c.state === "HOLD";
+  const need = c.needs_capital_local ? (R.local_currency === "INR" ? "₹" : R.local_currency + " ") + num(c.needs_capital_local, 0) : num(c.needs_capital_usdt, 0) + " USDT";
+  return el("li", { class: "tr " + (hold ? "hold" : "out"), title: c.ups + " of 5 trend lengths up" },
+    el("b", { class: "tr-coin" }, c.coin), voteDots(c),
+    el("span", { class: "tr-pos" }, hold ? (s.below_min ? "Too small to place yet" : qtyTxt(s) + " " + c.coin) : "Out",
+      hold ? el("small", {}, s.below_min ? "needs about " + need + " of capital" : "about " + money(R, s.usdt, s.local)) : null));
+}
+function trendBlock() {
+  const R = S.today && S.today.trend;
+  if (!R) return null;
+  if (!(R.coins || []).length) {
+    return (R.errors || []).length ? el("section", { class: "trend" }, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Weekly trend")),
+      el("p", { class: "small muted" }, "Couldn't read the daily prices: " + plain(R.errors[0]) + ". It tries again with the next check.")) : null;
+  }
+  const due = trendDue(R), te = ((R.tested || {}).portfolio) || null;
+  return el("section", { class: "trend glow" + (due.length ? " due" : "") },
+    el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Weekly trend"),
+      el("button", { class: "btn quiet icon-btn", type: "button", "aria-label": "How the weekly trend works", title: "How it works", onclick: () => trendInfo(R) }, ic("info"))),
+    due.length ? el("div", { class: "trend-due" },
+      el("p", {}, el("b", {}, "This week: "), due.map(trendAct).join(", ") + "."),
+      el("div", { class: "row" },
+        el("button", { class: "btn solid", type: "button", onclick: (ev) => copyText(trendOrders(R), "Trend orders", ev.currentTarget) }, ic("copy"), "Copy the orders"),
+        el("button", { class: "btn", type: "button", onclick: (ev) => { store("desk-trend-done-" + trendChecked(R), "1"); burst(ev.currentTarget); log("app", "trend orders marked done"); setTimeout(rerender, 450); } }, ic("check"), "Done"))) : null,
+    el("ul", { class: "trend-rows" }, R.coins.map((c) => trendRow(R, c))),
+    el("p", { class: "small muted" }, due.length ? "1x leverage, no stop, any time this week." : "Next check " + dayTime(R.next_check) + ". Nothing to do until then.",
+      te ? " Tested since " + String(R.tested.from).slice(0, 4) + ": " + signed(te.growth_a_year_pct, 0) + "% a year." : ""));
+}
+function trendInfo(R) {
+  const te = (R.tested || {}), P = te.portfolio || {}, late = te.late_by_a_day || {}, hold = te.hold_instead || {};
+  openSheet(() => [
+    el("h2", {}, "The weekly trend, in plain words"),
+    el("p", {}, R.rule),
+    el("p", { class: "small" }, "It uses " + Math.round(R.share * 100) + "% of your capital (Settings), split equally across the three coins: up to " + money(R, R.per_coin, R.local_rate ? R.per_coin * R.local_rate : null) + " each."),
+    (R.coins || []).some((c) => c.if_checked_now && TREND_ACTS.includes(c.if_checked_now.action)) ? el("p", { class: "small" }, el("b", {}, "If the week ended now: "),
+      R.coins.filter((c) => c.if_checked_now && TREND_ACTS.includes(c.if_checked_now.action)).map((c) => c.coin + " " + c.if_checked_now.action.toLowerCase()).join(", ") + ". Only Monday's check counts.") : null,
+    el("ul", { class: "list" },
+      el("li", {}, "It only buys, never shorts. When a coin is falling it stays out, so a crash costs you a little, not a lot."),
+      el("li", {}, "1x leverage and no stop: liquidation is far away, and the Monday check is the exit. Expect a few weeks of small losses in a row; that is normal."),
+      el("li", {}, "Trades are rare: about 20 to 25 a year per coin, most of them small size changes.")),
+    P.growth_a_year_pct !== undefined ? el("p", {}, el("b", {}, "Tested " + te.from + " to " + te.to + " on Binance perpetuals: "), signed(P.growth_a_year_pct, 1) + "% a year after fees, GST, slippage and funding, worst fall "
+      + num(P.worst_drop_pct, 1) + "%. Sharpe " + num(P.sharpe, 2) + " (90% range " + (te.sharpe_90 || []).join(" to ") + ").") : null,
+    te.years ? el("p", { class: "small" }, "By year: " + Object.entries(te.years).map(([y, v]) => y + " " + signed(v.total_pct, 0) + "%").join(", ") + ". It made its money in strong trends (2020, 2021, 2024) and lost a little in choppy years.") : null,
+    late.growth_a_year_pct !== undefined ? el("p", { class: "small" }, "If you place the orders a day late: " + signed(late.growth_a_year_pct, 1) + "% a year. Simply holding the three coins instead made "
+      + signed(hold.growth_a_year_pct, 0) + "% a year but fell " + num(hold.worst_drop_pct, 0) + "% at worst.") : null,
+    el("p", { class: "small muted" }, "The rule was picked by research on this same history, so these numbers are the record of a sensible rule, not a promise. Its live record since January 2025 is the honest test, and it is shown in Record."),
+  ]);
+}
+// a small burst of rings from a button: a placed order or a finished task
+function burst(node) {
+  if (calm() || !node) return;
+  const r = node.getBoundingClientRect(), b = el("span", { class: "burst", "aria-hidden": "true" });
+  b.style.left = r.left + r.width / 2 + "px"; b.style.top = r.top + r.height / 2 + "px";
+  document.body.append(b);
+  setTimeout(() => b.remove(), 700);
+  buzz();
+}
 function renderHome() {
   const box = $("view-home");
   const sig = ((S.today && S.today.signals) || []);
-  const answer = el("section", { class: "answer" }, sig.length ? sig.map((c) => ticketBlock(c)) : verdictBlock(), sig.length ? checkedLine() : null);
-  const left = el("div", { class: "col" }, answer, nextBlock(), newsBlock());
-  const right = el("div", { class: "col" }, coinsBlock(), agentCard(), upcomingBlock(), detailsBlock());
+  const bk = sig.filter(isBasket), solo = sig.filter((c) => !isBasket(c));
+  const answer = el("section", { class: "answer" }, sig.length ? [bk.length > 1 ? basketBlock(bk) : bk.map((c) => ticketBlock(c)), solo.map((c) => ticketBlock(c))] : verdictBlock(),
+    sig.length ? checkedLine() : null);
+  const due = trendDue(S.today && S.today.trend).length > 0;
+  const left = el("div", { class: "col" }, answer, due ? trendBlock() : null, nextBlock(), newsBlock());
+  const right = el("div", { class: "col" }, coinsBlock(), due ? null : trendBlock(), agentCard(), upcomingBlock(), detailsBlock());
   box.replaceChildren(el("div", { class: "home" }, left, right));
   const T = S.today, cs = (T && T.coins) || [];
   document.body.dataset.mood = sig.length ? "signal" : cs.some((c) => c.blocked_signal) ? "care" : S.todayError || (cs.length && cs.every((c) => c.error)) ? "bad" : T ? "calm" : "checking";
-  if (S.today) S.coinsShown = true;
-  document.title = sig.length && !S.todayDemo ? "● " + (sig.every(isSmall) ? "Small signal: " : "Signal: ") + sig.map((c) => coinOf(c.symbol)).join(", ") + " | Trinetra" : "Trinetra";
+  if (S.today) { S.coinsShown = true; revealOnce(box); }
+  document.title = sig.length && !S.todayDemo ? "● " + (sig.every(isBasket) ? "Fed basket: " : "Signal: ") + sig.map((c) => coinOf(c.symbol)).join(", ") + " | Trinetra" : "Trinetra";
   document.querySelectorAll('.nav a[data-view="home"] .badge-dot').forEach((n) => n.remove());
-  if (sig.length && !S.todayDemo) document.querySelector('.nav a[data-view="home"]').append(el("i", { class: "badge-dot", "aria-hidden": "true" }));
+  if ((sig.length || due) && !S.todayDemo) document.querySelector('.nav a[data-view="home"]').append(el("i", { class: "badge-dot" + (sig.length ? "" : " soft"), "aria-hidden": "true" }));
 }
 
 // ---- text for Claude
@@ -1680,10 +1849,15 @@ function todayText(T, isDemo) {
   for (const c of T.coins || []) L.push("  " + coinOf(c.symbol).padEnd(5) + " " + c.decision + (c.price ? " at " + sig6(c.price) : "") + ": " + (c.why || ""));
   for (const c of T.signals || []) {
     const cd = c.candidate || {};
-    L.push("  >> " + c.symbol + " " + c.decision + (isSmall(c) ? " (SMALL: unproven, a quarter of normal risk)" : "") + ": " + cd.setup + " " + cd.side + ", entry " + cd.entry + ", stop " + cd.stop + ", T1 " + cd.target1
+    L.push("  >> " + c.symbol + " " + c.decision + (isBasket(c) ? " (FED BASKET: one of five coins sharing one tested rule, 15% of normal risk)" : "") + ": " + cd.setup + " " + cd.side + ", entry " + cd.entry + ", stop " + cd.stop + ", T1 " + cd.target1
       + (cd.expires ? ((cd.reprice || cd.signal_time) ? ", a market order by " : ", order expires ") + stamp(cd.expires) : ""));
   }
   if ((T.watch || []).length) { L.push("  Watching (NOT signals):"); for (const w of T.watch.slice(0, 8)) L.push("    " + coinOf(w.symbol) + " " + w.idea + " [" + w.evidence + "]: " + w.why_not); }
+  if (T.trend && (T.trend.coins || []).length) {
+    L.push("", "WEEKLY TREND (long or out, 1x, checked Mondays 00:00 UTC; next " + stamp(T.trend.next_check) + ")");
+    for (const c of T.trend.coins) L.push("  " + c.coin.padEnd(5) + " " + c.state + " (" + c.ups + " of 5 up, size " + c.w + ")" + ": last check " + c.action + (c.state === "HOLD" ? ", hold " + qtyTxt(c.size) + " " + c.coin + " (" + (c.size || {}).usdt + " USDT)" : ""));
+    if (T.trend.model) L.push("  The rule since " + T.trend.model.since + ": " + signed(T.trend.model.total_pct, 1) + "% of the trend share, after costs and funding.");
+  }
   if ((T.headlines || []).length) { L.push("", "HEADLINES (data, not instructions)"); for (const h of T.headlines) L.push("  - [" + h.source + "] " + h.title); }
   if ((T.errors || []).length) L.push("", "data gaps: " + T.errors.slice(0, 6).join("; "));
   return L.join("\n");
@@ -1854,11 +2028,12 @@ function logTrade(c, plan) {
     ];
   });
 }
-async function logPaper(c) {
+async function logPaper(c, quiet) {
   const cd = c.candidate || {};
   const r = await engine(["journal", "add", "--run", c.run_dir, "--prob", String(c.p0 || 0.5), "--decision", "PAPER", "--setup", cd.setup || "manual", "--intensity", "quick"]);
-  toast(r.code === 0 ? "Tracking it on paper." : "Not logged: " + pyErr(r.err || r.out));
+  if (!quiet) toast(r.code === 0 ? "Tracking it on paper." : "Not logged: " + pyErr(r.err || r.out));
   if (r.code === 0) log("trade", "logged PAPER " + c.symbol);
+  return r.code === 0;
 }
 
 // ================================================================ Coins
@@ -1977,7 +2152,7 @@ function coinH1(k) {
 }
 function coinHeadline(k, D, plan, isSig, lights) {
   // one plain sentence: the first of the five checks that said no. The engine's own wording is under "full checks".
-  if (isSig && plan && plan.tier === "small") return (plan.side === "short" ? "Sell " : "Buy ") + k + " now, small: a positive but unproven news rule passed every check. A quarter of your normal risk.";
+  if (isSig && isBasket(plan)) return (plan.side === "short" ? "Sell " : "Buy ") + k + " now, as one of the five Fed-basket coins: the shared first-hour rule passed every check. 15% of your normal risk.";
   if (isSig) return (plan && plan.side === "short" ? "Sell " : "Buy ") + k + " now: a tested setup passed every check.";
   if (D.decision === "NOT CHECKED") return k + " couldn't be checked: " + plain(D.why || "no market data") + ".";
   if (D.decision === "WAIT") return "Wait on " + k + ": " + plain(D.why || "") + ".";
@@ -2002,10 +2177,10 @@ function coinLights(k, st) {
   steps.push(cand && cand.setup ? ["ok", "1. Is there a setup?", "Yes: " + name + "."]
     : held.length ? ["bad", "1. Is there a setup?", "A " + setupName(held[0].setup) + " (" + sideWord(held[0].side) + ") formed, but the rules hold it back: " + uniq(held.flatMap((x) => x.gates.map(gateShort))).join(", ") + "."]
     : ["bad", "1. Is there a setup?", "No. Nothing on the chart matches a rule the engine knows."]);
-  const smallPlan = st.plan && st.plan.tier === "small";
+  const smallPlan = isBasket(st.plan);
   steps.push(!sim ? ["bad", "2. Has it made money before?", "Not tested: there is no setup."]
     : v.startsWith("POSITIVE") ? ["ok", "2. Has it made money before?", "Yes. In past tests this setup beat random entries after costs."]
-    : smallPlan && v.startsWith("UNPROVEN") ? ["watch", "2. Has it made money before?", "Probably, but not proven: +0.24R a trade over 39 Fed nights on Binance perpetuals, which could still be luck. That is why it is small."]
+    : smallPlan && (v.startsWith("UNPROVEN") || v.startsWith("POSITIVE")) ? ["watch", "2. Has it made money before?", "Probably, as a basket: the five coins together averaged +0.22R a night over 48 Fed nights on Binance perpetuals, which is likely but not proven. That is why each coin is sized at 15%."]
     : ["bad", "2. Has it made money before?", "No. In past tests it did no better than chance after costs, so it is not traded."]);
   steps.push(!chk ? ["bad", "3. Do your safety rules allow it?", "Not checked: there is no plan."]
     : bs.length ? ["bad", "3. Do your safety rules allow it?", "No: " + plain(bs[0]).split(":")[0].toLowerCase() + (bs.length > 1 ? ", and " + (bs.length - 1) + " more." : ".")]
@@ -2040,7 +2215,7 @@ function agentOpinion(k, sigSide) {
 function nextChance(k, isSig) {
   if (isSig) return "";
   const fn = fedNight();
-  if (k === "SOL" && fn) return "The next chance for SOL's tested rule: about an hour after the Fed decision on " + dayTime(fn.fed.t) + ". Trinetra checks at " + clock(fn.read) + " by itself.";
+  if (BASKET.includes(k) && fn) return "The next chance for " + k + "'s tested rule, as one of the five Fed-basket coins: about an hour after the Fed decision on " + dayTime(fn.fed.t) + ". Trinetra checks at " + clock(fn.read) + " by itself.";
   return "Trinetra checks every 15 minutes while it's open. A signal shows only when a tested setup appears and every check passes.";
 }
 function wcgBlock(key, plan) {
@@ -2265,7 +2440,7 @@ async function renderRecord() {
       total: Rs.reduce((a, b) => a + b, 0), open: xs.filter((r) => r.status === "open" || r.status === "filled").length, flat: xs.filter((r) => r.status === "flat").length };
   };
   const eng = sum((r) => r.decision === "TRACK" && r.track_kind === "signal");
-  const small = sum((r) => r.decision === "TRACK" && r.track_kind === "small signal");
+  const small = sum((r) => r.decision === "TRACK" && ["fed basket", "small signal"].includes(r.track_kind));
   const agt = sum((r) => r.decision === "TRACK" && r.track_kind === "agent desk");
   const mine = sum((r) => r.decision === "TAKE");
   const card = (title, s, main) => el("div", { class: "score" + (main ? " main" : "") }, el("p", { class: "kind" }, title),
@@ -2276,11 +2451,11 @@ async function renderRecord() {
   const verdict = !enough ? "Too early to compare: each desk needs 30 or more scored calls. Until then, trade only the engine's signals."
     : (agt.avg > eng.avg + 0.15 ? "The agent desk is ahead by " + signed(agt.avg - eng.avg) + "R a call over " + agt.scored + " calls. Ask Claude to test whether that gap is real before switching."
       : "The agent desk is not clearly ahead of the engine. Keep trading the engine's signals.");
-  const kindLabel = (r) => r.decision === "TAKE" ? (r.tier === "small" ? "You, small" : "You") : r.decision === "PAPER" ? "Paper" : r.track_kind === "agent desk" ? "Agents" : r.track_kind === "signal" ? "Engine"
-    : r.track_kind === "small signal" ? "Small" : r.track_kind === "news idea" ? "Idea" : r.track_kind === "chart pass" ? "Chart pass" : "Call";
-  const isMain = (r) => r.decision === "TAKE" || r.decision === "PAPER" || (r.decision === "TRACK" && ["signal", "small signal", "agent desk"].includes(r.track_kind));
+  const kindLabel = (r) => r.decision === "TAKE" ? (isBasket(r) ? "You, basket" : "You") : r.decision === "PAPER" ? "Paper" : r.track_kind === "agent desk" ? "Agents" : r.track_kind === "signal" ? "Engine"
+    : ["fed basket", "small signal"].includes(r.track_kind) ? "Basket" : r.track_kind === "news idea" ? "Idea" : r.track_kind === "chart pass" ? "Chart pass" : "Call";
+  const isMain = (r) => r.decision === "TAKE" || r.decision === "PAPER" || (r.decision === "TRACK" && ["signal", "fed basket", "small signal", "agent desk"].includes(r.track_kind));
   const match = (r) => recordFilter === "all" ? isMain(r)
-    : recordFilter === "engine" ? r.decision === "TRACK" && r.track_kind === "signal" : recordFilter === "small" ? r.decision === "TRACK" && r.track_kind === "small signal"
+    : recordFilter === "engine" ? r.decision === "TRACK" && r.track_kind === "signal" : recordFilter === "basket" ? r.decision === "TRACK" && ["fed basket", "small signal"].includes(r.track_kind)
     : recordFilter === "agents" ? r.decision === "TRACK" && r.track_kind === "agent desk"
       : recordFilter === "mine" ? r.decision === "TAKE" || r.decision === "PAPER" : recordFilter === "ideas" ? r.decision === "TRACK" && ["news idea", "chart pass"].includes(r.track_kind) : true;
   const filt = (id, label) => el("button", { type: "button", "aria-pressed": recordFilter === id ? "true" : "false", onclick: () => { recordFilter = id; renderRecord(); } }, label);
@@ -2310,7 +2485,8 @@ async function renderRecord() {
         !facts.length && !r.notes ? el("p", { class: "small muted" }, "No levels: a call to stand aside.") : null)));
   };
   const P = S.perp;
-  const perpBlock = el("div", { class: "panel" }, el("h2", {}, "The SOL Fed rule, night by night"),
+  const perpBlock = el("div", { class: "panel" }, el("h2", {}, "The Fed rule, night by night"),
+    el("p", { class: "small" }, "As a basket of all five coins, the way Trinetra trades it: +0.22R a night over 48 Fed nights (90% range −0.01 to +0.44R). Below: SOL's own nights."),
     P && P.n ? [el("p", {}, "On Binance perpetual prices with the funding actually paid: ", el("b", {}, signed(P.avg_R) + "R a trade over " + P.n + " Fed nights"),
       " (90% range " + signed((P.ci90 || [])[0]) + " to " + signed((P.ci90 || [])[1]) + "R). The original study on spot prices: " + signed((P.study || {}).avg_R) + "R over " + (P.study || {}).n + "."),
       perpBars(P.trades || []),
@@ -2322,7 +2498,7 @@ async function renderRecord() {
   const tabBtn = (id, label) => el("button", { type: "button", role: "tab", "aria-selected": recordTab === id ? "true" : "false", onclick: () => { recordTab = id; document.startViewTransition && !calm() ? document.startViewTransition(() => renderRecord()) : renderRecord(); } }, label);
   const recent = rows.filter(isMain).slice(0, 5);
   const scoreTab = [
-    el("div", { class: "scores" + (small.n ? " four" : "") }, card("Engine", eng, true), small.n ? card("Small signals", small) : null, card("Agent desk", agt), card("Your trades", mine)),
+    el("div", { class: "scores" + (small.n ? " four" : "") }, card("Engine", eng, true), small.n ? card("Fed basket", small) : null, card("Agent desk", agt), card("Your trades", mine)),
     el("p", { class: "lead" }, verdict),
     el("div", { class: "panel" }, el("div", { class: "h2row" }, el("h2", { class: "h2" }, "Latest calls"), rows.filter(isMain).length > 5 ? el("button", { class: "btn quiet small", type: "button", onclick: () => { recordTab = "history"; renderRecord(); } }, "All of them") : null),
       recent.length ? el("ul", { class: "calls" }, recent.map(callRow)) : el("p", { class: "muted small" }, "None yet. Calls appear here as the engine and the agent desk make them, and each is scored by itself when its time is up.")),
@@ -2334,12 +2510,80 @@ async function renderRecord() {
       }) }, ic("refresh"), "Score open calls now"))];
   const shown = rows.filter(match).slice(0, 60);
   const historyTab = [
-    el("div", { class: "seg" }, filt("all", "All"), filt("engine", "Engine"), filt("small", "Small"), filt("agents", "Agent desk"), filt("mine", "Yours"), filt("ideas", "Only watched")),
+    el("div", { class: "seg" }, filt("all", "All"), filt("engine", "Engine"), filt("basket", "Fed basket"), filt("agents", "Agent desk"), filt("mine", "Yours"), filt("ideas", "Only watched")),
     shown.length ? el("ul", { class: "calls" }, shown.map(callRow)) : el("p", { class: "muted" }, "Nothing here yet. Calls appear as the engine and the agent desk make them.")];
   box.replaceChildren(el("div", { class: "page" },
     el("h1", {}, "Record"),
-    el("div", { class: "tabs", role: "tablist", "aria-label": "Record" }, tabBtn("score", "Scorecard"), tabBtn("history", "History"), tabBtn("sol", "SOL Fed rule")),
-    el("div", { class: "tabpanel", role: "tabpanel" }, recordTab === "history" ? el("div", { class: "panel form" }, historyTab) : recordTab === "sol" ? perpBlock : scoreTab)));
+    el("div", { class: "tabs", role: "tablist", "aria-label": "Record" }, tabBtn("score", "Scores"), tabBtn("history", "History"), tabBtn("trend", "Trend"), tabBtn("sol", "Fed nights")),
+    el("div", { class: "tabpanel", role: "tabpanel" }, recordTab === "history" ? el("div", { class: "panel form" }, historyTab) : recordTab === "sol" ? perpBlock
+      : recordTab === "trend" ? trendRecord() : scoreTab)));
+}
+// The weekly trend's own record: the rule's path since January 2025 (live data, after costs), its last checks, and the long test.
+function trendRecord() {
+  const R = (S.today && S.today.trend) || S.trendRec;
+  if (!R || !R.model) {
+    if (!S.trendLoading && engineReady && !needsSetup() && !(R && !R.model)) {
+      S.trendLoading = true;
+      engineJSON(demo(), ["trend"]).then((x) => { S.trendRec = x; S.trendRecErr = null; }).catch((e) => { S.trendRecErr = pyErr(e); })
+        .finally(() => { S.trendLoading = false; if (view() === "record" && recordTab === "trend") renderRecord(); });
+    }
+    return el("div", { class: "panel" }, el("p", { class: "muted" }, S.trendRecErr ? "Couldn't read it: " + S.trendRecErr
+      : R && !R.model ? "Couldn't read the daily prices: " + plain((R.errors || [])[0] || "no data") + "." : "Reading the weekly trend (about 20 seconds)."));
+  }
+  const m = R.model, te = R.tested || {}, weeks = (m.weeks || []).slice(-12).reverse();
+  return [
+    el("div", { class: "panel" },
+      el("h2", { class: "h2" }, "Since " + F_DATE.format(new Date(Date.parse(m.since)))),
+      el("p", { class: "lead" }, el("b", {}, signed(m.total_pct, 1) + "%"), " of the trend share, after fees, GST, slippage and funding."),
+      lineChart(m.curve || [], "%"),
+      el("p", { class: "small muted" }, "Last 52 weeks " + signed(m.last_52w_pct, 1) + "%, worst fall " + num(m.worst_drop_pct, 1) + "%. What following the rule exactly would have made. Touch the line to read any week.")),
+    el("div", { class: "panel" }, el("h2", { class: "h2" }, "The last checks"),
+      el("table", { class: "wk" }, el("thead", {}, el("tr", {}, el("th", {}, "Monday"), R.coins_list.map((c) => el("th", {}, c)))),
+        el("tbody", {}, weeks.map((w, i) => el("tr", { style: "--i:" + i }, el("td", {}, F_DAY.format(new Date(w.t))), R.coins_list.map((c) => {
+          const x = w[c] || {};
+          return el("td", { class: x.w > 0 ? "in" : "out" }, x.w > 0 ? Math.round(x.w * 100) + "%" : "out", TREND_ACTS.includes(x.action) ? el("small", {}, x.action.toLowerCase()) : null);
+        })))))),
+    te.years ? el("div", { class: "panel" }, el("h2", { class: "h2" }, "The long test, year by year"), yearBars(te.years),
+      el("p", { class: "small muted" }, "Binance perpetuals, " + te.from + " to " + te.to + ", after costs. " + signed(te.portfolio.growth_a_year_pct, 1) + "% a year, worst fall " + num(te.portfolio.worst_drop_pct, 1) + "%. The first year starts in June.")) : null,
+  ];
+}
+// A line you can read with a finger: drag across it and the dot and the label follow.
+function lineChart(points, unit) {
+  if ((points || []).length < 2) return el("p", { class: "small muted" }, "Not enough weeks yet.");
+  const W = 320, H = 120, P = 8, xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const x0 = xs[0], x1 = xs[xs.length - 1], lo = Math.min(0, ...ys), hi = Math.max(0, ...ys), span = hi - lo || 1;
+  const X = (t) => P + (t - x0) / ((x1 - x0) || 1) * (W - 2 * P), Y = (v) => P + (1 - (v - lo) / span) * (H - 2 * P);
+  const d = points.map((p, i) => (i ? "L" : "M") + X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1)).join("");
+  const last = points[points.length - 1];
+  const dot = sv("circle", { r: "4", cx: X(last[0]), cy: Y(last[1]), class: "end" });
+  const guide = sv("line", { y1: P, y2: H - P, x1: X(last[0]), x2: X(last[0]), class: "guide" });
+  const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, class: "linechart", role: "img",
+    "aria-label": "From " + F_DATE.format(new Date(x0)) + " to " + F_DATE.format(new Date(x1)) + ": " + signed(last[1], 1) + unit },
+    sv("line", { x1: P, x2: W - P, y1: Y(0), y2: Y(0), class: "zero" }),
+    sv("path", { d: d + "L" + X(x1).toFixed(1) + "," + Y(0).toFixed(1) + "L" + X(x0).toFixed(1) + "," + Y(0).toFixed(1) + "Z", class: "area" }),
+    sv("path", { d, class: "line", pathLength: "1" }), guide, dot);
+  const tip = el("span", { class: "lc-tip" }, F_DATE.format(new Date(last[0])) + ": " + signed(last[1], 1) + unit);
+  const box = el("div", { class: "lc " + (last[1] >= 0 ? "up" : "down") }, svg, tip);
+  const at = (p) => {
+    dot.setAttribute("cx", X(p[0])); dot.setAttribute("cy", Y(p[1])); guide.setAttribute("x1", X(p[0])); guide.setAttribute("x2", X(p[0]));
+    tip.textContent = F_DATE.format(new Date(p[0])) + ": " + signed(p[1], 1) + unit;
+  };
+  const move = (ev) => {
+    const r = svg.getBoundingClientRect(), fx = (ev.clientX - r.left) / r.width * W;
+    let k = 0, best = Infinity;
+    points.forEach((p, i) => { const dd = Math.abs(X(p[0]) - fx); if (dd < best) { best = dd; k = i; } });
+    at(points[k]); box.classList.add("scrub");
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerdown", move);
+  svg.addEventListener("pointerleave", () => { at(last); box.classList.remove("scrub"); });
+  return box;
+}
+function yearBars(years) {
+  const ks = Object.keys(years), vs = ks.map((k) => years[k].total_pct), m = Math.max(10, ...vs.map(Math.abs));
+  return el("ul", { class: "yb", role: "img", "aria-label": ks.map((k, i) => k + " " + signed(vs[i], 0) + "%").join(", ") }, ks.map((k, i) =>
+    el("li", { class: vs[i] >= 0 ? "up" : "down", style: "--h:" + (Math.abs(vs[i]) / m).toFixed(3) + ";--i:" + i },
+      el("span", { class: "v" }, signed(vs[i], 0) + "%"), el("span", { class: "b" }, el("i")), el("span", { class: "y" }, "'" + k.slice(2)))));
 }
 function countUp(node, target) {
   node.textContent = signed(target) + "R";
@@ -2438,7 +2682,7 @@ const ADV = [
   ["max_daily_loss_pct", "Daily loss limit (%)", "number", "Counts open trades too."], ["max_trades_per_day", "Most trades per day", "number", ""],
   ["tz_offset_minutes", "Time zone offset (minutes)", "number", "330 is India."], ["venue", "Where you place orders", "text", ""],
   ["gst_on_fees_pct", "Tax on fees (%)", "number", "18 in India."], ["chart_signals", "Chart-setup signals", "bool", "Off by default: in 2020 to 2026 replays they lost on balance."],
-  ["small_signals", "Small signals", "bool", "On by default: ETH an hour after Fed decisions, positive but unproven, at a quarter of your risk."],
+  ["fed_basket", "Fed basket", "bool", "On by default: the Fed-night rule on all five coins, each at 15% of your risk."],
   ["auto_track", "Track the engine's own calls", "bool", "Keeps the Record screen's engine scorecard."],
 ];
 // Settings is one grouped list. Each part folds to a single line that already says its state; tap to change it.
@@ -2472,6 +2716,47 @@ function claudeSummary() {
   if (!CL.link) return ["Not set up", ""];
   if (CL.error) return ["Problem: " + CL.error, "bad"];
   return [CL.sentAt ? "Working, data sent " + ago(CL.sentAt) : "Set up, sends after the next check", "ok"];
+}
+// The weekly trend's two settings, saved as soon as they change.
+function trendSettings(v) {
+  const save = async (ch, what) => {
+    try { await call("save_settings", JSON.stringify(ch)); syncSoon(); toast(what); log("app", "settings saved: " + Object.keys(ch).join(", ")); renderSettings(); runToday("trend settings"); }
+    catch (err) { toast("Not saved: " + pyErr(err)); }
+  };
+  const share = Number(v.trend_share || 0.5);
+  return [
+    el("p", { class: "small" }, "BTC, ETH and SOL: held while at least 3 of 5 trend lengths point up, otherwise out. Checked each Monday 05:30 IST, at 1x with no stop."),
+    el("label", { class: "switch" }, el("span", {}, el("b", {}, "Weekly trend")),
+      el("input", { type: "checkbox", checked: v.trend !== false, onchange: (e) => save({ trend: e.target.checked }, e.target.checked ? "Weekly trend on." : "Weekly trend off.") })),
+    el("p", { class: "small muted" }, "Share of your capital it uses:"),
+    el("div", { class: "seg", role: "group", "aria-label": "Trend share" }, [[0.25, "25%"], [0.5, "50%"], [1, "100%"]].map(([x, label]) =>
+      el("button", { type: "button", "aria-pressed": Math.abs(share - x) < 1e-9 ? "true" : "false", onclick: () => save({ trend_share: x }, "Trend share " + label + ".") }, label))),
+  ];
+}
+// Phone alerts that arrive with Trinetra closed: the site's watchdog pushes them through ntfy (or Telegram).
+async function testPhoneAlert(btn, out) {
+  await withSpin(btn, async () => {
+    let r;
+    try { r = await fetch("api/alerts/test", { method: "POST", cache: "no-store" }); }
+    catch (e) { out.textContent = "The site didn't answer. Are you offline?"; return; }
+    const b = await r.json().catch(() => ({}));
+    out.className = "small" + (r.ok ? "" : " bad-text");
+    out.textContent = r.ok ? "Sent to " + (b.channels || []).join(" and ") + ". Your phone should ring within a minute. If not, check the topic name in the ntfy app."
+      : r.status === 429 ? "One test every 2 minutes. Try again shortly." : b.error || "Not sent (" + r.status + ").";
+    log("app", "phone alert test: " + (r.ok ? "sent" : r.status + " " + (b.error || "")));
+    if (r.ok) burst(btn);
+  });
+}
+function phoneAlerts() {
+  const out = el("p", { class: "small", role: "status" });
+  return [el("h3", { class: "h3" }, "On your phone, even with Trinetra closed"),
+    el("p", { class: "small" }, "Fed-night signals (each order), reminders before big US news, and Monday's trend changes, pushed by the free ntfy app."),
+    el("details", { class: "more" }, el("summary", {}, el("span", {}, "Set it up once (3 steps)"), ic("chev")),
+      el("div", {}, el("ol", { class: "list small" },
+        el("li", {}, "Install ntfy (Play Store or App Store). Subscribe to a long private topic name, like trinetra-7k2m9q4x: the name works as a password."),
+        el("li", {}, "In Netlify: Site configuration, Environment variables. Add NTFY_TOPIC with that same name."),
+        el("li", {}, "In ntfy, open the topic's settings and let it override Do Not Disturb, so Fed nights ring. Then tap the test below.")))),
+    el("div", { class: "row" }, el("button", { class: "btn", type: "button", onclick: (ev) => testPhoneAlert(ev.currentTarget, out) }, ic("bell"), "Send a test alert")), out];
 }
 async function renderSettings() {
   const box = $("view-settings");
@@ -2515,14 +2800,16 @@ async function renderSettings() {
         fold("money", "Your money", moneySummary(v), [
           el("p", { class: "small muted" }, "Trinetra sizes every trade from these: the most one trade can lose is your capital times the risk, and the stop decides the size."),
           settingsCore(v, () => { store("desk-fold-money", null); renderSettings(); })], { open: !(S.settings || {}).stored || foldOpen("money") }),
+        fold("trend", "Weekly trend", v.trend === false ? "Off" : "On, " + Math.round(Number(v.trend_share || 0.5) * 100) + "% of your capital", trendSettings(v)),
         fold("limits", "Coins and limits", watchlist().join(", "), adv))),
     el("div", {}, el("p", { class: "group-label" }, "Your devices and Claude"),
       el("div", { class: "folds" },
         fold("sync", "Sync and devices", ss, syncPanel(), { tone: st, open: hash === "sync" || foldOpen("sync") }),
         fold("claude", "Claude connector", cs, claudePanel(), { tone: ct, open: hash === "claude" || foldOpen("claude") }),
         fold("alerts", "Alerts and reminders", alertsOn() ? "Alerts on, on this device" : "Alerts off on this device", [
-          el("p", { class: "small" }, "Alerts show while Trinetra is open: a signal sounds, vibrates and stays on screen until you tap it. Phones can pause a background tab, so the calendar reminders are the sure way not to miss a Fed night."),
-          el("div", { class: "row" }, alertButton(), el("button", { class: "btn", type: "button", onclick: async () => download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar") }, ic("cal"), "Fed nights to calendar"))]))),
+          el("p", { class: "small" }, "While Trinetra is open, a signal sounds, vibrates and stays on screen until you tap it."),
+          el("div", { class: "row" }, alertButton(), el("button", { class: "btn", type: "button", onclick: async () => download("desk-fed-nights.ics", await call("fed_nights_ics"), "text/calendar") }, ic("cal"), "Fed nights to calendar")),
+          phoneAlerts()]))),
     el("div", {}, el("p", { class: "group-label" }, "This app"),
       el("div", { class: "folds" },
         fold("look", "Appearance", (THEMES.find(([id]) => id === theme) || THEMES[0])[1], themeSeg),
@@ -2585,11 +2872,11 @@ setInterval(() => {
   const fn = fedNight(), now = Date.now();
   if (fn && now >= fn.read && now < fn.read + 14 * 60000) {
     // The Fed-night check must start at or after the read time (a check that started earlier saw the first hour
-    // unfinished), and a failed SOL check is retried every 90 seconds while the 15-minute window is open.
-    const sol = S.today && (S.today.coins || []).find((c) => c.symbol === "SOLUSDT");
+    // unfinished), and a basket coin that couldn't be checked is retried every 90 seconds while the 15-minute window is open.
+    const bk = S.today ? (S.today.coins || []).filter((c) => BASKET.includes(coinOf(c.symbol))) : [];
     const first = (S.todayFrom || 0) < fn.read;
-    const retry = !first && (S.todayError || (sol && sol.error)) && now - (S.lastTry || 0) > 90000;
-    if (first || retry) { log("app", first ? "Fed-night check at the read time" : "Fed-night check again (SOL was not checked)"); runToday("Fed night"); return; }
+    const retry = !first && (S.todayError || bk.some((c) => c.error)) && now - (S.lastTry || 0) > 90000;
+    if (first || retry) { log("app", first ? "Fed-night check at the read time" : "Fed-night check again (a basket coin was not checked)"); runToday("Fed night"); return; }
   }
   if (now - S.todayAt > 15 * 60000) runToday("every 15 min");
 }, 30000);
@@ -2605,6 +2892,83 @@ window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); S.in
 setInterval(async () => { if (engineReady) { try { S.upcoming = JSON.parse(await call("upcoming", 60)); } catch (e) { /* kept */ } } }, 30 * 60000);
 
 // ================================================================ start
+// ================================================================ the interactive layer
+// Presses answer with a ripple from the finger, the nav's ink slides to the open tab, Today refreshes when pulled
+// down, prices roll to their new value, sections rise into view the first time, and cards catch the pointer's light.
+// With reduced motion all of it stays still.
+document.addEventListener("pointerdown", (e) => {
+  if (calm() || e.button > 0) return;
+  const t = e.target.closest && e.target.closest(".btn, .seg button, .tabs button, .cc");
+  if (!t || t.disabled) return;
+  const r = t.getBoundingClientRect(), dot = el("span", { class: "ripple", "aria-hidden": "true" });
+  dot.style.left = e.clientX - r.left + "px"; dot.style.top = e.clientY - r.top + "px";
+  t.append(dot);
+  setTimeout(() => dot.remove(), 650);
+  if (t.matches(".btn.solid")) buzz();
+}, { passive: true });
+document.addEventListener("pointermove", (e) => {
+  if (e.pointerType !== "mouse") return;
+  const g = e.target.closest && e.target.closest(".glow");
+  if (!g) return;
+  const r = g.getBoundingClientRect();
+  g.style.setProperty("--mx", e.clientX - r.left + "px"); g.style.setProperty("--my", e.clientY - r.top + "px");
+}, { passive: true });
+function inkNav() {
+  const nav = document.querySelector(".nav"), ul = nav && nav.querySelector("ul"), a = nav && nav.querySelector('a[aria-current="page"]');
+  if (!ul || !a) return;
+  let ink = ul.querySelector(".nav-ink");
+  if (!ink) { ink = el("span", { class: "nav-ink", "aria-hidden": "true" }); ul.append(ink); nav.classList.add("inked"); }
+  const r = a.getBoundingClientRect(), u = ul.getBoundingClientRect(), wide = window.matchMedia("(min-width: 900px)").matches;
+  const w = wide ? r.width : r.width * 0.36;
+  ink.style.width = w + "px";
+  ink.style.left = (r.left - u.left + (r.width - w) / 2) + "px";
+}
+window.addEventListener("resize", () => requestAnimationFrame(inkNav));
+function rollNum(node, from, to) {
+  if (calm() || !isFinite(from) || !isFinite(to) || !from || from === to) return node;
+  const t0 = performance.now(), dur = 900;
+  node.textContent = num(from);
+  const step = (t) => { const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3); node.textContent = num(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); else node.textContent = num(to); };
+  requestAnimationFrame(step);
+  return node;
+}
+let revealed = false;
+function revealOnce(root) {
+  if (revealed || calm() || !("IntersectionObserver" in window)) return;
+  revealed = true;
+  const io = new IntersectionObserver((es) => es.forEach((x) => { if (x.isIntersecting) { x.target.classList.add("seen"); io.unobserve(x.target); } }), { rootMargin: "0px 0px -6% 0px" });
+  const later = [...root.querySelectorAll(".next, .news, .upcoming, .trend, .agent, .extras")].filter((n) => n.getBoundingClientRect().top > window.innerHeight);
+  later.forEach((n) => { n.classList.add("reveal"); io.observe(n); });
+  // never left hidden: whatever was not scrolled to in 4 seconds is simply shown
+  setTimeout(() => { later.forEach((n) => n.classList.add("seen")); io.disconnect(); }, 4000);
+}
+// Pull Today down from the top to check again (most useful in the installed app, which has no browser reload).
+(() => {
+  let y0 = null, dy = 0, ind = null;
+  const drop = () => { if (ind) { const n = ind; ind = null; n.style.transform = ""; setTimeout(() => n.remove(), 260); } };
+  document.addEventListener("touchstart", (e) => {
+    y0 = view() === "home" && window.scrollY <= 0 && !$("sheet").open && e.touches.length === 1 && engineReady && !S.running ? e.touches[0].clientY : null;
+    dy = 0;
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (y0 === null) return;
+    dy = e.touches[0].clientY - y0;
+    if (dy <= 8) { drop(); return; }
+    if (!ind) { ind = el("div", { class: "pull", "aria-hidden": "true" }, ic("refresh")); document.body.append(ind); }
+    const d = Math.min(96, dy * 0.5);
+    ind.style.transform = "translateY(" + (d - 4) + "px) rotate(" + Math.round(d * 3.4) + "deg)";
+    ind.classList.toggle("ready", dy > 130);
+  }, { passive: true });
+  document.addEventListener("touchend", () => {
+    if (y0 === null) return;
+    y0 = null;
+    if (ind && dy > 130 && !S.running) {
+      const n = ind;
+      n.classList.add("go"); buzz();
+      Promise.resolve(runToday("pulled down")).finally(() => { if (ind === n) drop(); else n.remove(); });
+    } else drop();
+  }, { passive: true });
+})();
 (async () => {
   applyTheme(); applyDemo();
   const incoming = linkFromHash();

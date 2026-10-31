@@ -201,6 +201,8 @@ class ScenarioExchange(desk.SynthExchange):
             rows = _split(keep[-6000:], 3) + _aggregate(rows1, 5 * MIN)
         elif tf == "15m":
             rows = base
+        elif tf == "1d":
+            rows = desk.with_early_days(_aggregate(base, desk.DAY_MS), self.seed + 7 + sum(ord(ch) for ch in sym))
         else:
             rows = _aggregate(base, desk.TF_MIN[tf] * MIN)
         self.series[k] = rows

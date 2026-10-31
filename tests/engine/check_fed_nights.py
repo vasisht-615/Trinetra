@@ -2,10 +2,10 @@
 
     python3 tests/engine/check_fed_nights.py --since 2025-01-01 --replay hist_fomc.json [--cache DIR]
 
-At minute 61 after each Fed decision it runs `today` (SOL and ETH) on a market rebuilt from data.binance.vision, as the app
-would, and compares each coin's decision with what `verify-news` recorded for that night (replay_history.py --out): a
-night the rule traded must show a signal (SOL) or a small signal (ETH), or a block that names its reason; a night the
-first hour did not qualify must show none.
+At minute 61 after each Fed decision it runs `today` (the five Fed-basket coins) on a market rebuilt from
+data.binance.vision, as the app would, and compares each coin's decision with what `verify-news` recorded for that night
+(replay_history.py --out): a night the rule traded must show a basket signal, or a block that names its reason; a night
+the first hour did not qualify must show none.
 """
 import argparse
 import json
@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--cache", default=os.path.expanduser("~/.cache/trinetra-binance"))
     ap.add_argument("--since", default="2025-01-01")
     ap.add_argument("--replay", required=True, help="the --out file of replay_history.py (FOMC, momentum_after_60m)")
+    ap.add_argument("--coins", default=",".join(desk.BASKET_COINS))
     a = ap.parse_args()
     H.fast_mode()
     with_recent_fed()
@@ -44,7 +45,7 @@ def main():
         t = rel["t"] + 61 * MIN
         m.now = t
         home = tempfile.mkdtemp(prefix="desk-fed-")
-        code, res = H.run(["today", "--coins", "SOL,ETH"], t, m, home=home)
+        code, res = H.run(["today", "--coins", a.coins], t, m, home=home)
         if code != 0 or not isinstance(res, dict):
             bad.append("%s: today failed: %s" % (rel["date"], str(res)[-200:]))
             continue
@@ -65,10 +66,10 @@ def main():
                 note = "blocked: " + "; ".join(b.split(":")[0] for b in c.get("blocks") or []) if c.get("blocks") else "NO SIGNAL: " + (c.get("why") or "")[:120]
                 if not c.get("blocks"):
                     bad.append("%s %s: the replay traded %s, the live pipeline gave %s without a block" % (rel["date"], coin, exp, got))
-            elif exp and side and coin == "ETH" and tier != "small":
-                bad.append("%s %s: a signal not labelled small" % (rel["date"], coin))
+            elif exp and side and tier != "basket":
+                bad.append("%s %s: a signal not labelled as the Fed basket" % (rel["date"], coin))
             n += 1
-            print("%s %-4s replay %-6s live %-13s %s %s" % (rel["date"], coin, exp or "none", got, "(small)" if tier == "small" else "", note))
+            print("%s %-4s replay %-6s live %-13s %s %s" % (rel["date"], coin, exp or "none", got, "(basket)" if tier == "basket" else "", note))
     print("%d coin-nights compared, %d disagreements" % (n, len(bad)))
     for b in bad:
         print("DISAGREE " + b)
