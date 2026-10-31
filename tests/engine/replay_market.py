@@ -41,6 +41,7 @@ class Market(object):
         self.a = archive
         self.now = None
         self.mem = {}
+        self.stale = []         # moments whose primary bars lagged the clock (a replay fault: the run is not valid)
 
     # ---------------------------------------------------------------- data
     def bars(self, sym, tf, start, end):
@@ -57,15 +58,20 @@ class Market(object):
             for m in months_between(start, end):
                 key = (sym, tf, m)
                 if key not in self.mem:
-                    rows = self.a.klines(sym, tf, month=m)
-                    if not rows and m >= RECENT:            # the latest month or two are published day by day
-                        y, mo = map(int, m.split("-"))
-                        d = dt.date(y, mo, 1)
-                        while d.month == mo and d <= utc_date(end):
-                            rows += self.a.klines(sym, tf, day=d)
-                            d += dt.timedelta(days=1)
-                    self.mem[key] = rows
-                out += self.mem[key]
+                    self.mem[key] = self.a.klines(sym, tf, month=m)
+                if self.mem[key] or m < RECENT:
+                    out += self.mem[key]
+                    continue
+                # the latest month or two are published day by day: read (and keep) each day as the clock reaches it,
+                # never a month frozen at the first day it was asked for
+                y, mo = map(int, m.split("-"))
+                d = max(dt.date(y, mo, 1), utc_date(start))
+                while d.month == mo and d <= utc_date(end):
+                    dk = (sym, tf, d)
+                    if dk not in self.mem:
+                        self.mem[dk] = self.a.klines(sym, tf, day=d)
+                    out += self.mem[dk]
+                    d += dt.timedelta(days=1)
         # only bars that had closed by now: the replay never sees the future
         return [r for r in out if start <= int(r[0]) <= end and int(r[6]) < self.now]
 
@@ -200,8 +206,19 @@ def run_timeline(market, start, end, every, coins, config, out):
         H.run(["config", "set", k, str(v)], start, market, home=home)
     t = start
     rows = []
+    prim = config.get("primary_tf", "4h")
+    span = desk.TF_MIN[prim] * MIN
     while t <= end:
         market.now = t
+        # the replay must show the engine the market as it was: the last closed bar must be the one just before now
+        last = market.bars(coins[0] + "USDT", prim, t - 3 * span, t)
+        if not last or t - int(last[-1][6]) > span + MIN:
+            # the archive has no bars here (Binance left 28 Oct 2026 out): skip the moment rather than show the engine a
+            # frozen chart, and say so in the summary
+            market.stale.append(t)
+            rows.append({"t": t, "skipped": "no archive bars"})
+            t += every
+            continue
         code, res = H.run(["today", "--coins", ",".join(coins)], t, market, home=home)
         if code != 0 or not isinstance(res, dict):
             rows.append({"t": t, "error": str(res)[-300:]})
@@ -211,7 +228,7 @@ def run_timeline(market, start, end, every, coins, config, out):
                 rows.append({"t": t, "coin": c["symbol"], "decision": c.get("decision"), "why": (c.get("why") or "")[:200],
                              "setup": cand.get("setup"), "side": cand.get("side"), "kind": cand.get("kind"), "ev_r": c.get("ev_r"),
                              "blocks": [b.split(":")[0] for b in c.get("blocks") or []], "blocked_signal": c.get("blocked_signal"),
-                             "event": (c.get("event") or {}).get("name")})
+                             "event": (c.get("event") or {}).get("name"), "tier": c.get("tier")})
         if out:
             with open(out, "a") as fh:
                 for r in rows[-len(coins):]:
@@ -225,13 +242,15 @@ def summarise(rows):
     cands = [r for r in rows if r.get("setup")]
     stops = collections.Counter(b for r in cands for b in (r["blocks"] or ["(history or EV)"]) if not str(r.get("decision")).startswith("SIGNAL"))
     print("decisions: %s" % dict(dec))
+    rows = [r for r in rows if "skipped" not in r]
     print("moments with a candidate: %d; signals: %d" % (len(cands), sum(1 for r in rows if str(r.get("decision")).startswith("SIGNAL"))))
     print("what stopped the candidates (count of moments):")
     for k, v in stops.most_common(15):
         print("  %4d  %s" % (v, k))
     for r in rows:
         if str(r.get("decision")).startswith("SIGNAL") or r.get("blocked_signal"):
-            print("  %s %s %s %s %s ev %s" % (desk.fmt_time(r["t"], 330), r["coin"], r["decision"], r.get("setup"), r.get("side"), r.get("ev_r")))
+            print("  %s %s %s%s %s %s ev %s" % (desk.fmt_time(r["t"], 330), r["coin"], r["decision"], " (small)" if r.get("tier") == "small" else "",
+                                                 r.get("setup"), r.get("side"), r.get("ev_r")))
 
 
 def main():
@@ -248,8 +267,9 @@ def main():
     a = ap.parse_args()
     H.fast_mode()
     step = desk.TF_MIN[a.every] * MIN
-    start = desk.parse_when(a.start + "T00:00Z", "start") // step * step + step
-    end = desk.parse_when(a.end + "T00:00Z", "end")
+    whole = lambda x: x if "T" in x else x + "T00:00Z"                       # a date, or a moment like 2026-09-16T18:55Z
+    start = desk.parse_when(whole(a.start), "start") // step * step + step
+    end = desk.parse_when(whole(a.end), "end")
     config = {"primary_tf": a.primary}
     if a.chart_signals:
         config["chart_signals"] = "true"
@@ -260,6 +280,9 @@ def main():
     rows = run_timeline(m, start, end, step, [c.strip() for c in a.coins.split(",")], config, a.out)
     print("%d moments x %d coins in %.0f s (%d files downloaded, %d could not be fetched)" % (
         (end - start) // step + 1, len(a.coins.split(",")), time.time() - t0, m.a.downloads, len(m.a.failures)))
+    if m.stale:
+        days = sorted({desk.utc(t).strftime("%Y-%m-%d") for t in m.stale})
+        print("skipped %d moments: the archive has no %s bars then (%s)" % (len(m.stale), a.primary, ", ".join(days)))
     summarise(rows)
     return 0
 

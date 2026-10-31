@@ -73,7 +73,7 @@ function signalText(s) {
   const t1 = ((p.targets || [])[0] || {}).price || c.target1;
   const e = p.entry || c.entry, st = p.stop || c.stop;
   const pct = (x, from) => (x && from ? (Math.abs(x - from) / from * 100).toFixed(2) + "%" : "n/a");   // distance from the entry
-  return ["SIGNAL " + coinOf(s.symbol) + " " + String(c.side || "").toUpperCase() + " (" + (c.setup || "") + ")",
+  return [(s.tier === "small" ? "SMALL SIGNAL (positive but unproven: a quarter of normal risk, scored apart) " : "SIGNAL ") + coinOf(s.symbol) + " " + String(c.side || "").toUpperCase() + " (" + (c.setup || "") + ")",
     "  order: " + (p.entry_type || "market") + " at about " + e + (c.expires ? ", before " + ist(c.expires) : ""),
     "  stop " + st + " (" + pct(st, e) + " from entry), first target " + t1 + " (" + pct(t1, e) + "), set from the actual fill",
     "  size " + (p.qty ?? "?") + " " + coinOf(s.symbol) + ", " + (p.notional ?? "?") + " USDT at " + (p.leverage ?? "?") + "x; loss at stop about " + (p.max_loss_at_stop ?? "?") + " USDT",
@@ -128,7 +128,7 @@ async function callTool(store, token, name, args) {
   const f = feed.feed || {};
   if (name === "vigil_status") {
     const lines = [freshness({ ...f, at: feed.at }), "Coins: " + (f.settings && f.settings.watchlist || []).join(", "),
-      "Signals now: " + (((f.today || {}).signals || []).map((s) => coinOf(s.symbol) + " " + s.decision).join(", ") || "none"),
+      "Signals now: " + (((f.today || {}).signals || []).map((s) => coinOf(s.symbol) + " " + s.decision + (s.tier === "small" ? " (small)" : "")).join(", ") || "none"),
       ...(((f.today || {}).coins || []).filter((c) => c.blocked_signal).map((c) => "Paused: the tested " + coinOf(c.symbol) + " rule fired (" +
         c.blocked_signal.side + ") but was stopped by: " + (c.blocked_signal.by || []).join("; ") + ". Nothing to place.")),
       ...(((f.today || {}).coins || []).filter((c) => c.error).map((c) => "Not checked: " + coinOf(c.symbol) + " (no market data; this is not a 'no signal' answer)")),

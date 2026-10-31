@@ -13,6 +13,7 @@ export const READ_AFTER = 60 * MIN;             // momentum_after_60m reads minu
 export const ORDER_WINDOW = 15 * MIN;           // tested: a market entry within 15 minutes of the read
 const RULE_MOVE = 0.003;                        // more than 0.3% from the release price at minute 60
 const STOP_MIN_PCT = 0.005, STOP_FLOOR_PCT = 0.025, T1_R = 1.5, T2_R = 2.5;   // SOL's tested stop floor and targets
+const ETH_FLOOR_PCT = 0.02;                                                       // ETH's stop floor (the small signal)
 
 export const KIND_NAME = { FOMC: "Fed decision", CPI: "US inflation (CPI)", NFP: "US jobs report", PPI: "US producer prices (PPI)",
   PCE: "US PCE inflation", GDP: "US GDP" };
@@ -80,7 +81,9 @@ export function denseMinutes(bars, tRel, count) {
 /** The tested SOL Fed rule (momentum_after_60m) on minute bars, measured exactly as desk.py's analyse_event does:
  *  follow the first hour if price is more than 0.3% from the release price at minute 60; stop at the larger of 0.5%,
  *  half the first hour's range and SOL's 2.5% floor; targets at 1.5R and 2.5R. Null when the hour isn't complete. */
-export function solRule(bars, tRel) {
+export function solRule(bars, tRel) { return fedRule(bars, tRel, STOP_FLOOR_PCT); }
+/** The same first-hour rule with a coin's own stop floor (ETH's small signal uses 2%). */
+export function fedRule(bars, tRel, floor) {
   if (!bars.length || bars[bars.length - 1].t < tRel + 55 * MIN) return null;    // the data does not reach minute 60 yet
   const post = denseMinutes(bars, tRel, 60);
   if (!post) return null;
@@ -90,7 +93,7 @@ export function solRule(bars, tRel) {
   if (Math.abs(move) <= RULE_MOVE) return { fired: false, move, price: c, deadline };
   const side = move > 0 ? "long" : "short";
   const span = Math.max(...post.map((b) => b.h)) - Math.min(...post.map((b) => b.l));
-  const dist = Math.max(STOP_MIN_PCT * c, 0.5 * span, STOP_FLOOR_PCT * c);
+  const dist = Math.max(STOP_MIN_PCT * c, 0.5 * span, floor * c);
   const sg = side === "long" ? 1 : -1;
   return { fired: true, side, move, price: c, stop: c - sg * dist, target1: c + sg * T1_R * dist, target2: c + sg * T2_R * dist,
     stopPct: dist / c, deadline };
@@ -101,7 +104,7 @@ export function solRule(bars, tRel) {
 export function helloMessage(groups, now) {
   const next = groups.find((g) => g.t > now);
   return { title: "Trinetra alerts are on", priority: 2, tags: ["white_check_mark"],
-    message: "You'll get a reminder an hour before each big US release and, after Fed decisions, the SOL rule's answer."
+    message: "You'll get a reminder an hour before each big US release and, after Fed decisions, the SOL rule's answer (with ETH's small signal)."
       + (next ? " Next: " + next.kinds.map((k) => KIND_NAME[k]).join(" + ") + ", " + istDay(next.t) + "." : "") };
 }
 
@@ -121,10 +124,24 @@ export function fedMessage(g) {
     message: "At " + ist(g.t) + ". Don't trade into it. The SOL rule's answer comes here at about " + ist(g.t + READ_AFTER + MIN) + "." };
 }
 
-export function solMessage(res) {
+// ETH's small signal (positive but unproven, a quarter of normal risk), added to the Fed-night message when it was read
+function smallLine(eth) {
+  if (eth === undefined) return "";
+  if (!eth) return " ETH's small signal couldn't be read here: Trinetra checks it when it is open.";
+  if (!eth.fired) return " ETH moved " + pct(eth.move) + ": no small signal.";
+  const buy = eth.side === "long";
+  return " Small signal, ETH: " + (buy ? "buy" : "sell") + " at about " + price(eth.price) + ", stop " + (eth.stopPct * 100).toFixed(1) + "% "
+    + (buy ? "below" : "above") + " your fill. Positive but unproven, so a quarter of your normal risk; place it only if Trinetra shows it too.";
+}
+
+export function solMessage(res, eth) {
   if (!res.fired) {
+    if (eth && eth.fired) {
+      return { title: "Small signal: ETH " + (eth.side === "long" ? "BUY" : "SELL") + " before " + ist(eth.deadline), priority: 4, tags: ["small_orange_diamond"],
+        message: "SOL moved " + pct(res.move) + " in the first hour after the Fed: no SOL signal." + smallLine(eth) };
+    }
     return { title: "No SOL signal tonight", priority: 3, tags: ["zzz"],
-      message: "SOL moved " + pct(res.move) + " in the first hour after the Fed; the tested rule needs more than 0.3%. Nothing to do." };
+      message: "SOL moved " + pct(res.move) + " in the first hour after the Fed; the tested rule needs more than 0.3%. Nothing to do." + smallLine(eth) };
   }
   const buy = res.side === "long";
   const t1Pct = Math.abs(res.target1 / res.price - 1);
@@ -133,7 +150,7 @@ export function solMessage(res) {
       + (buy ? "buy" : "sell") + " now at about " + price(res.price) + ", stop " + (res.stopPct * 100).toFixed(1) + "% "
       + (buy ? "below" : "above") + " your fill (about " + price(res.stop) + "), first target " + (t1Pct * 100).toFixed(1) + "% "
       + (buy ? "above" : "below") + " (about " + price(res.target1) + "). Read from Coinbase prices on the server: open Trinetra "
-      + "and place it only if Trinetra shows the signal too (it checks Binance data, the news check and your limits)." };
+      + "and place it only if Trinetra shows the signal too (it checks Binance data, the news check and your limits)." + smallLine(eth) };
 }
 
 export function solFailMessage(g) {
@@ -180,7 +197,12 @@ export async function runWatchdog({ now, fetchFn, store, topic, server, site, re
       let res = null;
       try { res = solRule(await coinbaseCandles(fetchFn, "SOL-USD", d.group.t - 5 * MIN, d.group.t + READ_AFTER + MIN), d.group.t); }
       catch (e) { console.log("watchdog: SOL read failed: " + String((e && e.message) || e).slice(0, 200)); }
-      if (res) msg = solMessage(res);
+      let eth = null;
+      if (res) {
+        try { eth = fedRule(await coinbaseCandles(fetchFn, "ETH-USD", d.group.t - 5 * MIN, d.group.t + READ_AFTER + MIN), d.group.t, ETH_FLOOR_PCT); }
+        catch (e) { console.log("watchdog: ETH read failed: " + String((e && e.message) || e).slice(0, 200)); }
+      }
+      if (res) msg = solMessage(res, eth);
       else if (now >= d.group.t + READ_AFTER + 10 * MIN) msg = solFailMessage(d.group);    // give up retrying with time left to act
       else continue;                                                                        // data not there yet: next run
     }

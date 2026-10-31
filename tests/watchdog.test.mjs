@@ -110,3 +110,36 @@ test("no data: retry, then tell the user to open the app while there is time", a
   assert.match(net.posts[0].title, /Open Trinetra now/);
   assert.equal(net.posts[0].click, undefined);
 });
+
+test("Fed night: ETH's small signal rides along with SOL's answer, and is sent alone when SOL is quiet", async () => {
+  const byProduct = (rows) => {
+    const posts = [];
+    const fetchFn = async (url, init = {}) => {
+      if (url.startsWith("https://api.exchange.coinbase.com/")) {
+        const p = url.split("/products/")[1].split("/")[0];
+        return new Response(JSON.stringify(rows[p] || []), { status: rows[p] ? 200 : 503 });
+      }
+      posts.push(JSON.parse(init.body));
+      return new Response("{}", { status: 200 });
+    };
+    return { fetchFn, posts };
+  };
+  // both fire: SOL's alert, with ETH's small signal in it
+  let store = memStore(); await store.set("sent/hello", "1");
+  let net = byProduct({ "SOL-USD": hour(FED, 0.008), "ETH-USD": hour(FED, 0.007) });
+  assert.deepEqual(await runWatchdog({ fetchFn: net.fetchFn, store, topic: "t", server: "https://n", site: "", releases: RELEASES, now: FED + 62 * MIN }), ["sol:" + FED]);
+  assert.match(net.posts[0].title, /^SOL rule fired: BUY/);
+  assert.match(net.posts[0].message, /Small signal, ETH: buy .* a quarter of your normal risk/);
+  // SOL quiet, ETH fires: the small signal is the alert
+  store = memStore(); await store.set("sent/hello", "1");
+  net = byProduct({ "SOL-USD": hour(FED, 0.001), "ETH-USD": hour(FED, -0.006) });
+  await runWatchdog({ fetchFn: net.fetchFn, store, topic: "t", server: "https://n", site: "", releases: RELEASES, now: FED + 62 * MIN });
+  assert.match(net.posts[0].title, /^Small signal: ETH SELL before 01:45 IST$/);
+  assert.equal(net.posts[0].priority, 4);
+  // ETH unreadable: SOL's answer still goes, and says so
+  store = memStore(); await store.set("sent/hello", "1");
+  net = byProduct({ "SOL-USD": hour(FED, 0.001) });
+  await runWatchdog({ fetchFn: net.fetchFn, store, topic: "t", server: "https://n", site: "", releases: RELEASES, now: FED + 62 * MIN });
+  assert.match(net.posts[0].title, /^No SOL signal tonight$/);
+  assert.match(net.posts[0].message, /ETH's small signal couldn't be read/);
+});

@@ -265,6 +265,12 @@ details.more > summary .n { color: var(--slate); font-weight: 500; }
 .ladder .nm { font-size: 11.5px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; opacity: .78; }
 .ladder .tx b { font: 780 16px/1.15 var(--body); }
 .ladder .dl { font-size: 12.5px; font-weight: 650; opacity: .85; }
+.ticket.small { background: linear-gradient(155deg, color-mix(in srgb, var(--gold) 52%, #fff) 0%, color-mix(in srgb, var(--gold) 70%, #fff) 60%, color-mix(in srgb, var(--gold) 82%, #fff) 100%);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--gold-ink) 30%, transparent), var(--shadow); }
+.tk-small { font-size: 14.5px; line-height: 1.45; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--gold-ink) 7%, transparent); }
+.chip.sig.small { background: color-mix(in srgb, var(--gold) 55%, var(--panel)); }
+.scores.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 600px) { .scores.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .ticket.example { box-shadow: var(--shadow); }
 .ticket.example::before { content: "EXAMPLE"; position: absolute; right: -38px; top: 22px; transform: rotate(35deg); background: var(--gold-ink); color: var(--gold);
   font: 800 11px/1 var(--body); letter-spacing: .14em; padding: 6px 44px; z-index: 2; }

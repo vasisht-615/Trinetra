@@ -197,12 +197,14 @@ class DataAndCalendar(unittest.TestCase):
 
 
 class WholeDay(unittest.TestCase):
-    def test_today_puts_the_proven_coin_first_and_signals_only_it(self):
+    def test_today_puts_the_fed_rule_coins_first_and_signals_only_them(self):
         ex = H.ScenarioExchange(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)])
         code, res = H.run(["today"], T + 61 * H.MIN, ex)
         self.assertEqual(code, 0, res)
-        self.assertEqual([c["symbol"] for c in res["signals"]], ["SOLUSDT"])
-        self.assertEqual(res["coins"][0]["symbol"], "SOLUSDT")
+        # SOL's proven rule and ETH's small one, checked first, and nothing else
+        self.assertEqual([c["symbol"] for c in res["signals"]], ["SOLUSDT", "ETHUSDT"])
+        self.assertEqual([c["symbol"] for c in res["coins"][:2]], ["SOLUSDT", "ETHUSDT"])
+        self.assertEqual([c.get("tier") for c in res["signals"]], [None, "small"])
 
     def test_one_broken_coin_does_not_hide_the_others(self):
         class NoFoo(H.ScenarioExchange):
@@ -222,6 +224,99 @@ class WholeDay(unittest.TestCase):
             H.run(["today", "--coins", "SOL"], T + m * H.MIN, ex, home=home)
         rows = [r for r in desk.journal_load(home) if r.get("decision") == "TRACK" and r.get("track_kind") == "signal"]
         self.assertEqual(len(rows), 1, rows)
+
+
+def eth(minutes=61, reaction="down", home=None):
+    ex = H.ScenarioExchange(T + int(minutes * H.MIN), T, reaction, calendar=[("FOMC", T)])
+    return H.run(["brief", "ETHUSDT"], T + int(minutes * H.MIN), ex, home=home)
+
+
+class SmallSignals(unittest.TestCase):
+    """ETH's Fed rule is traded small: positive on its history and on Binance perpetuals, not proven."""
+    QUARTER = 1000 * 0.005 * 0.25          # the default config: 1,000 USDT, 0.5% a trade, a quarter of it
+
+    def test_eth_signals_small_at_a_quarter_of_normal_risk(self):
+        code, res = eth()
+        self.assertEqual(code, 0, res)
+        self.assertEqual(decision(res), "SIGNAL SHORT")
+        self.assertEqual(res.get("tier"), "small")
+        p = plan_of(res)
+        self.assertEqual(p.get("tier"), "small")
+        self.assertAlmostEqual(p["max_loss_at_stop"], self.QUARTER, delta=self.QUARTER * 0.06)
+        self.assertGreaterEqual(p["stop_distance_pct"], 2.0 - 0.01)          # ETH's tested 2% floor
+        self.assertIn("small signal", res["decision"]["why"])
+
+    def test_switched_off_means_no_trade(self):
+        code, res = eth(home=home_with(config={"small_signals": "false"}))
+        self.assertEqual(decision(res), "NO TRADE")
+        self.assertFalse(res.get("tier"))
+
+    def test_elevated_news_halves_it_again(self):
+        code, res = eth(home=home_with(news=dict(NEWS, market={"level": "elevated", "reasons": NEWS["market"]["reasons"]})))
+        self.assertEqual(decision(res), "SIGNAL SHORT")
+        self.assertAlmostEqual(plan_of(res)["max_loss_at_stop"], self.QUARTER / 2, delta=self.QUARTER * 0.04)
+
+    def test_extreme_news_pauses_it_and_says_so(self):
+        code, res = eth(home=home_with(news=NEWS))
+        self.assertEqual(decision(res), "NO TRADE")
+        self.assertTrue(res.get("blocked_signal"))
+        self.assertEqual(res["blocked_signal"].get("tier"), "small")
+
+    def test_no_signal_before_the_hour_or_after_the_window(self):
+        for m in (59, 76, 300):
+            self.assertNotEqual(str(decision(eth(minutes=m)[1])), "SIGNAL SHORT", m)
+
+    def test_tracked_apart_and_never_proves_the_edge(self):
+        home = home_with()
+        eth(home=home)
+        kinds = [r.get("track_kind") for r in desk.journal_load(home) if r.get("decision") == "TRACK"]
+        self.assertIn("small signal", kinds)
+        self.assertNotIn("signal", kinds)
+        # 60 winning small trades logged by hand: the edge status still counts none of them
+        rows = []
+        for i in range(60):
+            r = trade(T - (90 - i) * H.HOUR, decision="TAKE", R=1.3, pnl=2.0, symbol="ETHUSDT", setup="momentum_after_60m")
+            r["tier"] = "small"
+            rows.append(r)
+        st = desk.probation_status(rows, desk.DEFAULTS)
+        self.assertEqual(st["status"], "UNPROVEN")
+        self.assertEqual(st["n"], 0)
+
+    def test_a_logged_small_trade_keeps_its_tier(self):
+        home = home_with()
+        code, res = eth(home=home)
+        ex = H.ScenarioExchange(T + 62 * H.MIN, T, "down", calendar=[("FOMC", T)])
+        code, out = H.run(["journal", "add", "--run", res["run_dir"], "--prob", "0.5", "--decision", "TAKE", "--setup", "momentum_after_60m",
+                           "--intensity", "quick", "--fill", str(plan_of(res)["entry"])], T + 62 * H.MIN, ex, home=home)
+        self.assertEqual(code, 0, out)
+        took = [r for r in desk.journal_load(home) if r.get("decision") == "TAKE"]
+        self.assertEqual([r.get("tier") for r in took], ["small"])
+
+    def test_a_small_account_is_sized_up_to_the_exchange_minimum_within_half_risk(self):
+        # 5,000 INR at 1%: a quarter is an ETH order under the 5 USDT minimum; the smallest size that clears it risks less than half
+        home = home_with(config={"equity": "5000", "equity_currency": "INR", "usdt_fx": "95.08", "risk_per_trade_pct": "1", "max_leverage": "10"})
+        code, res = eth(home=home)
+        self.assertEqual(decision(res), "SIGNAL SHORT", res.get("decision"))
+        p = plan_of(res)
+        self.assertGreaterEqual(p["notional"], 5.0)
+        self.assertTrue(0.25 < p["min_order_lift"] <= 0.5, p.get("min_order_lift"))
+        self.assertLessEqual(p["max_loss_at_stop"], 5000 / 95.08 * 0.01 * 0.5 * 1.02)
+        self.assertTrue(any("exchange minimum" in n for n in p["notes"]))
+
+    def test_too_small_even_at_half_risk_is_blocked_and_says_what_to_change(self):
+        home = home_with(config={"equity": "5000", "equity_currency": "INR", "usdt_fx": "95.08", "risk_per_trade_pct": "0.25", "max_leverage": "10"})
+        code, res = eth(home=home)
+        self.assertEqual(decision(res), "NO TRADE")
+        self.assertTrue(any("exchange minimum" in b for b in res["decision"]["blocks"]))
+        self.assertTrue(any("raise your capital or risk per trade" in n for n in plan_of(res)["notes"]))
+        self.assertEqual((res.get("blocked_signal") or {}).get("tier"), "small")
+
+    def test_other_coins_never_signal_small(self):
+        for coin in ("BTCUSDT", "XRPUSDT", "LINKUSDT"):
+            ex = H.ScenarioExchange(T + 61 * H.MIN, T, "down", calendar=[("FOMC", T)])
+            code, res = H.run(["brief", coin], T + 61 * H.MIN, ex)
+            self.assertEqual(decision(res), "NO TRADE", coin)
+            self.assertFalse(res.get("tier"), coin)
 
 
 if __name__ == "__main__":
